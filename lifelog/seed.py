@@ -372,7 +372,8 @@ def scenario_storm(hours_to_restore: float = 12, indoor_temp_c: float = 32.0) ->
                     RETURNING id""", (poly, hours_to_restore, indoor_temp_c))
     affected = db.query("""SELECT i.id, p.model FROM items i JOIN users u ON u.id = i.user_id
                            JOIN products p ON p.id = i.product_id
-                           JOIN outages o ON o.id = %s AND ST_Contains(o.area, u.geom)""", (out["id"],))
+                           JOIN outages o ON o.id = %s AND ST_Contains(o.area, u.geom)
+                           WHERE NOT u.synthetic""", (out["id"],))
     t_end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     t0 = t_end - timedelta(minutes=90)
     for a in affected:

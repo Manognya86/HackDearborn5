@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS users (
     geom      geometry(Point, 4326) NOT NULL
 );
 
+-- scale-mode users (scripts/setup_db.py --scale N): history for benchmarks, kept out of the outage demo
+ALTER TABLE users ADD COLUMN IF NOT EXISTS synthetic BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS refuges (
     id         SERIAL PRIMARY KEY,
     name       TEXT NOT NULL,

@@ -1,4 +1,5 @@
 """Business logic on top of Tiger Data. SQL does the heavy lifting; Python shapes results."""
+import threading
 from datetime import datetime, timedelta, timezone
 
 from . import db, engine, realtime, weather
@@ -187,7 +188,7 @@ def rescue() -> dict:
                     WHERE NOT EXISTS (SELECT 1 FROM outages o2 WHERE o2.active AND ST_Contains(o2.area, cand.geom))
                     ORDER BY cand.geom <-> u.geom LIMIT 3) x) AS refuges
         FROM outages o
-        JOIN users u ON ST_Contains(o.area, u.geom)
+        JOIN users u ON ST_Contains(o.area, u.geom) AND NOT u.synthetic
         JOIN items i ON i.user_id = u.id
         JOIN products p ON p.id = i.product_id
         WHERE o.active""")
@@ -206,7 +207,7 @@ def rescue() -> dict:
             "refuges": r["refuges"] or [], "outage": r["outage"],
         })
     people.sort(key=lambda p: (not p["at_risk"], p["hours_left"] if p["hours_left"] is not None else 1e9))
-    users = db.query("SELECT id, name, lat, lon, can_host, is_me FROM users")
+    users = db.query("SELECT id, name, lat, lon, can_host, is_me FROM users WHERE NOT synthetic")
     refuges = db.query("SELECT name, kind, lat, lon FROM refuges")
     return {"people": people, "outages": outages_geojson(), "users": users, "refuges": refuges}
 
@@ -332,16 +333,80 @@ def _compression_stats() -> dict:
     return {}
 
 
-def tiger_stats() -> dict:
+BUDGET_SQL = """SELECT i.id, (SELECT used FROM item_timeline(i.id, %s) ORDER BY bucket DESC LIMIT 1) FROM items i"""
+# 30-day exposure calendar for every medicine: the hierarchical rollup vs the same numbers from raw readings
+CALENDAR_AGG_SQL = """SELECT day, item_id, avg_temp, min_temp, max_temp, burn, buckets FROM readings_1d
+                      WHERE day >= time_bucket('1 day', now()) - INTERVAL '29 days'"""
+CALENDAR_RAW_SQL = """
+    WITH b AS (
+        SELECT time_bucket('5 minutes', r.ts) AS bucket, r.item_id, avg(r.temp_c) AS avg_temp,
+               min(r.temp_c) AS min_temp, max(r.temp_c) AS max_temp, avg(least(burn_rate(r.temp_c, p.model), 1e6)) AS avg_rate
+        FROM readings r JOIN items i ON i.id = r.item_id JOIN products p ON p.id = i.product_id
+        WHERE r.ts >= time_bucket('1 day', now()) - INTERVAL '29 days'
+        GROUP BY 1, 2)
+    SELECT time_bucket('1 day', bucket) AS day, item_id, avg(avg_temp), min(min_temp), max(max_temp),
+           sum(least(1.0, avg_rate * 5 / 60.0)) AS burn, count(*) AS buckets
+    FROM b GROUP BY 1, 2"""
+
+
+def _median_ms(sql: str, params=None, runs: int = 3) -> float:
+    import statistics
     import time
-
-    def timed(raw: bool) -> float:
+    db.query(sql, params)  # warm-up
+    times = []
+    for _ in range(runs):
         t = time.perf_counter()
-        db.query("""SELECT i.id, (SELECT used FROM item_timeline(i.id, %s) ORDER BY bucket DESC LIMIT 1)
-                    FROM items i""", (raw,))
-        return round((time.perf_counter() - t) * 1000, 1)
+        db.query(sql, params)
+        times.append((time.perf_counter() - t) * 1000)
+    return round(statistics.median(times), 1)
 
-    timed(False)  # warm up
+
+def benchmark(runs: int = 3) -> dict:
+    """Median of `runs` timings after a warm-up: continuous aggregate vs the same answer from raw readings."""
+    def pair(agg_sql, agg_params, raw_sql, raw_params, raw_rows, agg_rows):
+        a, r = _median_ms(agg_sql, agg_params, runs), _median_ms(raw_sql, raw_params, runs)
+        return {"continuous_aggregate_ms": a, "raw_readings_ms": r, "speedup": round(r / a, 1) if a else None,
+                "raw_rows_scanned": raw_rows, "aggregate_rows_read": agg_rows}
+
+    window = "ts >= time_bucket('1 day', now()) - INTERVAL '29 days'"
+    return {
+        "runs": runs,
+        "budget_all_items": pair(BUDGET_SQL, (False,), BUDGET_SQL, (True,),
+                                 db.one("SELECT count(*) AS n FROM readings r JOIN items i ON i.id = r.item_id")["n"],
+                                 db.one("SELECT count(*) AS n FROM readings_5m")["n"]),
+        "calendar_30d": pair(CALENDAR_AGG_SQL, None, CALENDAR_RAW_SQL, None,
+                             db.one(f"SELECT count(*) AS n FROM readings WHERE {window}")["n"],
+                             db.one(f"SELECT count(*) AS n FROM ({CALENDAR_AGG_SQL}) x")["n"]),
+    }
+
+
+_bench_cache: dict = {}
+_bench_lock = threading.Lock()
+BENCH_TTL_S = 600
+
+
+def cached_benchmark(fresh: bool = False) -> dict:
+    """The raw side scans every reading, which takes minutes at scale: reuse the last result for
+    BENCH_TTL_S, and let only one measurement run at a time."""
+    import time
+    with _bench_lock:
+        if fresh or not _bench_cache or time.time() - _bench_cache["at"] > BENCH_TTL_S:
+            _bench_cache.update(at=time.time(), result={**benchmark(), "measured_at": now()})
+        return _bench_cache["result"]
+
+
+def warm_benchmark() -> None:
+    """Measure in the background at startup so Under the hood opens instantly."""
+    def run():
+        try:
+            cached_benchmark()
+        except Exception:  # noqa: BLE001  (no database yet: the page measures on demand)
+            pass
+    threading.Thread(target=run, daemon=True, name="benchmark-warmup").start()
+
+
+def tiger_stats(fresh: bool = False) -> dict:
+    bench = cached_benchmark(fresh)
     return {
         "hypertables": _try("""
             SELECT h.hypertable_name AS name, h.num_chunks AS chunks, h.compression_enabled,
@@ -360,7 +425,9 @@ def tiger_stats() -> dict:
             WHERE j.job_id >= 1000 ORDER BY j.job_id"""),
         "extensions": _try("SELECT extname, extversion FROM pg_extension ORDER BY extname"),
         "watermark": cagg_watermark(),
-        "benchmark_ms": {"continuous_aggregate": timed(False), "raw_readings": timed(True)},
+        "benchmark_ms": {"continuous_aggregate": bench["budget_all_items"]["continuous_aggregate_ms"],
+                         "raw_readings": bench["budget_all_items"]["raw_readings_ms"]},
+        "benchmark": bench,
     }
 
 

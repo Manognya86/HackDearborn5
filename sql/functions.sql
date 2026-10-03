@@ -163,6 +163,7 @@ LANGUAGE sql STABLE AS $$
         JOIN products p ON p.id = i.product_id
         JOIN users u ON u.id = i.user_id
         CROSS JOIN LATERAL (SELECT * FROM item_timeline(i.id) x ORDER BY x.bucket DESC LIMIT 1) t
+        WHERE NOT u.synthetic   -- scale-mode history is for benchmarks, not people to alert
     )
     SELECT id, 'frozen', 'critical',
            nickname || ' froze (' || round(avg_temp::numeric, 1) || '°C). The label says not to use frozen product.'

@@ -32,6 +32,7 @@ def manifest():
 @app.on_event("startup")
 def _start_realtime():
     realtime.start()
+    services.warm_benchmark()
 
 
 def _item_or_404(item_id: int, raw: bool = False) -> dict:
@@ -388,8 +389,8 @@ def ack_alert(alert_id: int):
 
 # ------------------------------------------------------------------ under the hood
 @app.get("/api/tiger")
-def tiger():
-    return {**services.tiger_stats(), "listeners": realtime.subscriber_count()}
+def tiger(fresh: bool = False):
+    return {**services.tiger_stats(fresh), "listeners": realtime.subscriber_count()}
 
 
 # ------------------------------------------------------------------ live sensor simulator
