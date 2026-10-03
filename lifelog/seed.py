@@ -280,8 +280,8 @@ def run(with_weather: bool = True) -> dict:
     porch = seed_porch(with_weather)
     with db.conn(autocommit=True) as c:
         # leave the in-progress bucket to real-time aggregation
-        c.execute("CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
-        c.execute("CALL refresh_continuous_aggregate('readings_1d', NULL, time_bucket('1 day', now()))")
+        db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
+        db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_1d', NULL, time_bucket('1 day', now()))")
     compressed = compress_history()
     check_alerts()
     return {"readings": n, "items": len(iid), "users": len(uid), "compressed_chunks": compressed, **porch}
@@ -456,5 +456,5 @@ def apply_schema() -> None:
         c.execute((sql / "aggregates.sql").read_text(encoding="utf-8"))
         c.execute((sql / "realtime.sql").read_text(encoding="utf-8"))
         if stale:
-            c.execute("CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
+            db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
     add_policy()

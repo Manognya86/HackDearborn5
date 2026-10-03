@@ -107,11 +107,11 @@ def generate(n: int, days: int = DAYS, log=print) -> dict:
     with db.conn(autocommit=True) as c:
         w = start
         while w < end:  # 15-day windows keep each refresh transaction bounded
-            c.execute("CALL refresh_continuous_aggregate('readings_5m', %s::timestamptz, %s::timestamptz)",
+            db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_5m', %s::timestamptz, %s::timestamptz)",
                       (w, min(w + timedelta(days=15), end)))
             w += timedelta(days=15)
-        c.execute("CALL refresh_continuous_aggregate('readings_5m', %s::timestamptz, time_bucket('5 minutes', now()))", (start,))
-        c.execute("CALL refresh_continuous_aggregate('readings_1d', time_bucket('1 day', %s::timestamptz), "
+        db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_5m', %s::timestamptz, time_bucket('5 minutes', now()))", (start,))
+        db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_1d', time_bucket('1 day', %s::timestamptz), "
                   "time_bucket('1 day', now()))", (start,))
     refresh_s = time.perf_counter() - t
 

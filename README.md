@@ -60,7 +60,7 @@ server-side, refreshing both rollups 38 s, columnstore conversion 7 s. Re-run `s
 | Storage | Columnstore policy (segment by item, order by time; 13.4× on compressed chunks at scale), 400-day retention policies | |
 | Under the hood page | Hypertable sizes, compression ratio, job runs; rollup vs raw timings (median of 3) for every budget and the 30-day calendar | |
 | Live sensors | Streams a reading per medicine every 5 s into the real-time aggregate | |
-| Ask LIFELOG | Tools query Tiger | Function calling over 5 tools, shows which ones it called |
+| Ask LIFELOG | 6 tools query Tiger (medicines most urgent first with status, dates, live trend; details with forecast and what-if; 30-day calendar from `readings_1d`; exposure simulation; outage; alerts), all in explicit units | Function calling; shows the tools it called and the model that answered. If every Gemini model is unavailable it answers straight from the Tiger data, labeled "without AI" |
 | Real time | `LISTEN/NOTIFY` triggers on `readings` and `alerts` → Server-Sent Events; alerts re-checked within ~2 s of new data; medicines, forecast, outage ranking and the late-data comparison refresh on each event | |
 | Accuracy report | Exact per-reading burn inside the continuous aggregate (joins `items`/`products`), cross-checked against raw SQL and an independent Python recomputation; sensitivity to the 8 h assumption | |
 | Data quality | Ingest rejects impossible values and duplicates, flags implausible jumps, logs counts | |
@@ -236,10 +236,21 @@ docker run -d --name lifelog --restart unless-stopped --env-file .env -e GEMINI_
 ```
 then open http://localhost:8000.
 
-### Tests
+### Tests and validation
 ```bash
-.venv/Scripts/python -m pytest -q
+.venv/Scripts/python -m pytest -q                 # 53 unit + integration tests (engine, SQL parity, forecast, Gemini fallback, chatbot tools)
+.venv/Scripts/python scripts/verify_tiger.py      # Tiger objects, jobs, late-data path, LISTEN/NOTIFY
+.venv/Scripts/python scripts/validate_app.py      # every endpoint end to end against the running app (add --demo for the scenarios)
 ```
+Run them while the demo is idle (no live sensors, storm or unrepaired late upload).
+
+### Gemini models and limits
+Every Gemini call goes through `gem.generate()`: a per-request timeout (`GEMINI_TIMEOUT_S`, default 60), one retry on
+503/500/504, then the next model in `GEMINI_FALLBACK_MODELS` (default `gemini-3.7-flash,gemini-3.5-flash,gemini-3.1-flash-lite`)
+on 503 / 429 / 404. When all fail, the button shows Google's reason (e.g. "429 free-tier limit of 20 requests per day
+reached, resets in ~21 min") and the Tiger-powered features keep working. **A free-tier key allows only 20 requests per
+model per day, and one chatbot question uses 3 to 5** (one per tool round): enable billing on the key's Google AI Studio
+project before judging.
 
 ## 5-minute demo script
 1. **Demo controls → Reset.** My medicines: four medicines near 100%. The Lantus spare shows *sensor silent*; the Victoza pen must be used within 3 days of its in-use period. (If scale data is loaded for judging, skip Reset: it returns to the small seed.)

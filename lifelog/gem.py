@@ -1,5 +1,7 @@
 """All Gemini calls. Every function returns plain dicts / strings so the API layer stays thin."""
 import json
+import threading
+import time
 from datetime import datetime
 
 import httpx
@@ -27,23 +29,62 @@ def client() -> genai.Client:
 
 
 NOT_NEEDED = "Budgets, late-data repair, alerts, outage ranking and Under the hood don't need Gemini and keep working."
+RETRY_STATUS = {500, 503, 504}      # transient on Google's side: retry once, then try the next model
+NEXT_MODEL_STATUS = {404, 429}      # model retired / this model's quota used up: go straight to the next model
+_last = threading.local()
+
+
+def last_model() -> str | None:
+    """The model that answered the most recent generate() call on this thread."""
+    return getattr(_last, "model", None)
+
+
+def _reason(e: "errors.APIError") -> str:
+    det = (e.details or {}).get("error", {}).get("details", []) if isinstance(e.details, dict) else []
+    quota = [v for d in det for v in d.get("violations", []) if v.get("quotaId")]
+    retry = next((d.get("retryDelay") for d in det if d.get("retryDelay")), None)
+    if quota:
+        q = quota[0]
+        per = "day" if "PerDay" in q["quotaId"] else "minute" if "PerMinute" in q["quotaId"] else "period"
+        tier = " free-tier" if "FreeTier" in q["quotaId"] else ""
+        wait = f", resets in ~{round(int(retry.rstrip('s')) / 60)} min" if retry and retry.rstrip("s").isdigit() else ""
+        return f"429{tier} limit of {q.get('quotaValue', '?')} requests per {per} reached{wait}"
+    msg = str(e.message or "").split(". ")[0].strip().rstrip(".")
+    return f"{e.code} {e.status or ''}: {msg}".strip()
 
 
 def generate(**kwargs):
-    """Every Gemini call goes through here: timeouts, rate limits and API errors become
-    GeminiUnavailable (HTTP 503 with a readable message) instead of a hung button or a 500."""
-    try:
-        return client().models.generate_content(**kwargs)
-    except GeminiUnavailable:
-        raise
-    except (httpx.TimeoutException, TimeoutError) as e:
-        raise GeminiUnavailable(f"Gemini didn't answer within {config.GEMINI_TIMEOUT_S:.0f} s. Try again. {NOT_NEEDED}") from e
-    except errors.APIError as e:
-        if e.code == 429:
-            raise GeminiUnavailable(f"Gemini is rate-limited right now; try again in a minute. {NOT_NEEDED}") from e
-        raise GeminiUnavailable(f"Gemini returned an error ({e.code}). {NOT_NEEDED}") from e
-    except httpx.HTTPError as e:
-        raise GeminiUnavailable(f"Couldn't reach Gemini ({type(e).__name__}). {NOT_NEEDED}") from e
+    """Every Gemini call goes through here. Overloaded (503) or rate-limited (429) models are retried and then
+    replaced by GEMINI_FALLBACK_MODELS; timeouts and remaining errors become GeminiUnavailable (HTTP 503 with
+    Google's reason) instead of a hung button or a 500."""
+    models = list(dict.fromkeys([kwargs.pop("model", config.GEMINI_MODEL)] + config.GEMINI_FALLBACK_MODELS))
+    reasons = []
+    for model in models:
+        for attempt in range(2):
+            try:
+                resp = client().models.generate_content(model=model, **kwargs)
+                _last.model = model
+                return resp
+            except GeminiUnavailable:
+                raise
+            except (httpx.TimeoutException, TimeoutError) as e:
+                raise GeminiUnavailable(f"Gemini ({model}) didn't answer within {config.GEMINI_TIMEOUT_S:.0f} s. "
+                                        f"Try again. {NOT_NEEDED}") from e
+            except errors.APIError as e:
+                if e.code in RETRY_STATUS and attempt == 0:
+                    time.sleep(1.5)
+                    continue
+                reasons.append(f"{model} → {_reason(e)}")
+                if e.code in RETRY_STATUS | NEXT_MODEL_STATUS:
+                    break  # next model
+                raise GeminiUnavailable(f"Gemini returned an error ({_reason(e)}). {NOT_NEEDED}") from e
+            except httpx.HTTPError as e:
+                raise GeminiUnavailable(f"Couldn't reach Gemini ({type(e).__name__}). {NOT_NEEDED}") from e
+    head = ("Gemini is out of quota for this API key right now" if all("429" in r for r in reasons)
+            else "Gemini is overloaded or rate-limited right now")
+    hint = ("The free tier allows 20 requests per model per day: enable billing for the key's Google AI Studio "
+            "project, or wait for the reset." if all("per day" in r for r in reasons) else "Try again in a minute.")
+    raise GeminiUnavailable(f"{head} ({'; '.join(reasons)}). {hint} {NOT_NEEDED}")
 
 
 def _structured(contents, schema, system: str, temperature: float = 0.2):

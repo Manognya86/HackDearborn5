@@ -630,7 +630,7 @@ async function askLifelog(q) {
   try {
     const r = await post(withLang("/api/ask"), { question: q, history });
     history.push({ role: "user", text: q }, { role: "model", text: r.answer });
-    pending.innerHTML = md(r.answer) + (r.tool_calls.length ? `<div class="tools">looked up: ${r.tool_calls.map((c) => `${esc(c.name)}(${esc(Object.values(c.args).join(", "))})`).join(" · ")}</div>` : "");
+    pending.innerHTML = md(r.answer) + (r.tool_calls.length || r.model ? `<div class="tools">${r.offline ? "no AI · " : ""}looked up: ${r.tool_calls.map((c) => `${esc(c.name)}(${esc(Object.values(c.args).join(", "))})`).join(" · ")}${r.model ? ` · ${esc(r.model)}` : ""}</div>` : "");
   } catch (e) { pending.innerHTML = `<span class="muted">${esc(e.message.includes("GEMINI_API_KEY") ? "Gemini isn't set up yet: add GEMINI_API_KEY to .env." : e.message)}</span>`; }
 }
 $("#ask-form").addEventListener("submit", (e) => { e.preventDefault(); askLifelog($("#ask-input").value); });
