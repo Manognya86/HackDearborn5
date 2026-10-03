@@ -13,7 +13,7 @@ def now() -> datetime:
 # ------------------------------------------------------------------ items
 def list_items(user_id: int | None = None) -> list[dict]:
     rows = db.query("""
-        SELECT i.id, i.nickname, i.started_at, i.user_id, u.name AS user_name, u.is_me,
+        SELECT i.id, i.nickname, i.started_at, i.user_id, i.opened_at, i.expires_on, i.lot, u.name AS user_name, u.is_me,
                p.id AS product_id, p.name AS product_name, p.model, p.source AS product_source
         FROM items i JOIN users u ON u.id = i.user_id JOIN products p ON p.id = i.product_id
         WHERE (%(u)s::int IS NULL OR i.user_id = %(u)s)
@@ -22,7 +22,8 @@ def list_items(user_id: int | None = None) -> list[dict]:
         r.update(summary(r["id"], r["model"]))
         gap = [{"hours": r["stale_minutes"] / 60, "last_temp": r["current_temp"]}] if (r["stale_minutes"] or 0) > 20 else []
         r["worst_case"] = engine.gap_worst_case(r["remaining"], gap, r["model"])
-        r["status"] = engine.status_of(r, r["worst_case"], r["zone"])
+        r["dates"] = engine.dates_info(r["opened_at"], r["expires_on"], r["model"].get("in_use_days"), now())
+        r["status"] = engine.status_of(r, r["worst_case"], r["zone"], r["dates"])
     return rows
 
 
@@ -70,12 +71,16 @@ def item_detail(item_id: int, raw: bool = False) -> dict | None:
     worst = engine.gap_worst_case(state["remaining"], gaps, m)
     whatif = engine.whatif(state["remaining"], cur, m)
     alerts_open = db.query("SELECT * FROM alerts WHERE item_id = %s AND resolved_at IS NULL", (item_id,))
-    status = engine.status_of(state, worst, state["zone"])
+    dates = engine.dates_info(item["opened_at"], item["expires_on"], m.get("in_use_days"), now())
+    status = engine.status_of(state, worst, state["zone"], dates)
     return {
         "item": item,
         "state": state,
+        # the chart shows the last 3 days; episodes, stats and accuracy use the whole history
         "timeline": [{"t": r["bucket"], "temp": r["avg_temp"], "min": r["min_temp"], "max": r["max_temp"],
-                      "remaining": 1 - r["used"], "zone": r["zone"]} for r in timeline],
+                      "remaining": 1 - r["used"], "zone": r["zone"]} for r in timeline
+                     if r["bucket"] >= now() - timedelta(days=3)],
+        "dates": dates,
         "episodes": episodes,
         "burners": burners[:8],
         "gaps": gaps,
@@ -398,6 +403,77 @@ def openfda_lookup(name: str) -> dict | None:
     return None
 
 
+# ------------------------------------------------------------------ 30-day calendar (hierarchical aggregate)
+def history(item_id: int, days: int = 30) -> list[dict]:
+    return db.query("""SELECT day, avg_temp, min_temp, max_temp, burn, buckets FROM readings_1d
+                       WHERE item_id = %s AND day >= time_bucket('1 day', now()) - %s * INTERVAL '1 day'
+                       ORDER BY day""", (item_id, days - 1))
+
+
+# ------------------------------------------------------------------ FDA recalls (openFDA enforcement)
+_recall_cache: dict = {}
+
+
+def recalls(brand: str, lot: str | None = None) -> dict:
+    """Drug recalls for this brand from openFDA's enforcement reports, newest first, cached 6 hours.
+    A recall is flagged when it lists your lot number, or when its reason is temperature-related."""
+    import time
+
+    import httpx
+    key = brand.lower()
+    hit = _recall_cache.get(key)
+    if not hit or time.time() - hit[0] > 6 * 3600:
+        rows, total, error = [], 0, None
+        try:
+            r = httpx.get("https://api.fda.gov/drug/enforcement.json",
+                          params={"search": f'openfda.brand_name:"{brand}"', "sort": "report_date:desc", "limit": 10}, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                total, rows = data["meta"]["results"]["total"], data["results"]
+            elif r.status_code != 404:   # 404 = no recalls on record
+                error = f"openFDA returned {r.status_code}"
+        except httpx.HTTPError as e:
+            error = str(e)
+        hit = (time.time(), {"total": total, "rows": rows, "error": error})
+        _recall_cache[key] = hit
+    data = hit[1]
+    out = []
+    for r in data["rows"]:
+        codes = r.get("code_info", "")
+        d = r.get("report_date", "")
+        out.append({
+            "recall_number": r.get("recall_number"), "status": r.get("status"), "classification": r.get("classification"),
+            "reason": r.get("reason_for_recall"), "report_date": f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else d,
+            "product": (r.get("product_description") or "")[:220], "lots": codes[:220], "firm": r.get("recalling_firm"),
+            "lot_match": bool(lot and lot.lower() in codes.lower()),
+            "temperature_related": "temperature" in (r.get("reason_for_recall") or "").lower(),
+        })
+    return {"brand": brand, "total": data["total"], "error": data["error"], "recalls": out,
+            "active_lot_match": any(x["lot_match"] and x["status"] == "Ongoing" for x in out)}
+
+
+# ------------------------------------------------------------------ caregiver share links
+def create_share(user_id: int, label: str | None = None) -> str:
+    import secrets
+    token = secrets.token_urlsafe(16)
+    db.execute("INSERT INTO shares (token, user_id, label) VALUES (%s, %s, %s)", (token, user_id, label))
+    return token
+
+
+def shared_view(token: str) -> dict | None:
+    """What a caregiver sees: status of each medicine and open alerts. Read-only, no locations."""
+    sh = db.one("""SELECT s.*, u.name FROM shares s JOIN users u ON u.id = s.user_id
+                   WHERE s.token = %s AND NOT s.revoked""", (token,))
+    if not sh:
+        return None
+    items = [{k: i[k] for k in ("nickname", "product_name", "remaining", "current_temp", "zone", "stale_minutes",
+                                "status", "dates", "worst_case")} for i in list_items(sh["user_id"])]
+    alerts_ = db.query("""SELECT a.message, a.severity, a.created_at FROM alerts a JOIN items i ON i.id = a.item_id
+                          WHERE i.user_id = %s AND a.resolved_at IS NULL ORDER BY a.severity, a.created_at DESC""",
+                       (sh["user_id"],))
+    return {"name": sh["name"], "label": sh["label"], "items": items, "alerts": alerts_, "updated": now()}
+
+
 # ------------------------------------------------------------------ precautions
 _forecast_cache: dict = {}
 
@@ -426,6 +502,13 @@ def precautions(item: dict, state: dict, gaps: list[dict], whatif: list[dict]) -
     m, out = item["model"], []
     fridge = m["target_max_c"] <= 10
     zone = state["zone"]
+    d = engine.dates_info(item.get("opened_at"), item.get("expires_on"), m.get("in_use_days"), now())
+    if d["expired"]:
+        out.append({"level": "critical", "text": "It's past its printed expiration date. Don't use it; ask your pharmacy for a replacement."})
+    elif d["in_use_over"]:
+        out.append({"level": "critical", "text": f"Its in-use period is over (the label allows {round(d['in_use_days'])} days after opening). Throw it away and start a new one."})
+    elif d.get("use_by") and d["days_left"] <= 3:
+        out.append({"level": "warning", "text": f"Use it by {d['use_by'].strftime('%b %d')} ({d['use_by_reason']}). Get a new one ready."})
     if zone == "Frozen":
         out.append({"level": "critical", "text": "It has frozen. Don't use it, even after it thaws. Ask your pharmacist for a replacement."})
     if zone == "Above labeled limit":

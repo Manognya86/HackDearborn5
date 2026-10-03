@@ -84,6 +84,74 @@ def compare(item_id: int):
             "log": db.query("SELECT * FROM ingest_log WHERE item_id = %s ORDER BY id DESC LIMIT 5", (item_id,))}
 
 
+class ItemDates(BaseModel):
+    opened_at: datetime | None = None
+    expires_on: str | None = None   # YYYY-MM-DD
+    lot: str | None = None
+
+
+@app.patch("/api/items/{item_id}")
+def update_item(item_id: int, body: ItemDates):
+    _item_or_404(item_id)
+    db.execute("UPDATE items SET opened_at = %s, expires_on = %s::date, lot = %s WHERE id = %s",
+               (body.opened_at, body.expires_on or None, (body.lot or "").strip() or None, item_id))
+    services.check_alerts()
+    return {"ok": True}
+
+
+@app.get("/api/items/{item_id}/history")
+def item_history(item_id: int, days: int = 30):
+    _item_or_404(item_id)
+    return services.history(item_id, max(1, min(days, 90)))
+
+
+@app.get("/api/items/{item_id}/recalls")
+def item_recalls(item_id: int):
+    d = _item_or_404(item_id)
+    brand = d["item"]["product_name"].split()[0]
+    return services.recalls(brand, d["item"].get("lot"))
+
+
+class ShareIn(BaseModel):
+    label: str | None = None
+
+
+@app.post("/api/share")
+def share(body: ShareIn):
+    me = db.one("SELECT id FROM users WHERE is_me")
+    return {"token": services.create_share(me["id"], body.label)}
+
+
+@app.get("/api/shares")
+def shares():
+    return db.query("SELECT token, label, created_at FROM shares s JOIN users u ON u.id = s.user_id WHERE u.is_me AND NOT revoked ORDER BY created_at DESC")
+
+
+@app.delete("/api/share/{token}")
+def revoke_share(token: str):
+    db.execute("UPDATE shares SET revoked = TRUE WHERE token = %s", (token,))
+    return {"ok": True}
+
+
+@app.get("/api/share/{token}")
+def shared(token: str):
+    v = services.shared_view(token)
+    if not v:
+        raise HTTPException(404, "This link is no longer active.")
+    return v
+
+
+@app.get("/s/{token}")
+def share_page(token: str):
+    return FileResponse(config.ROOT / "static" / "share.html")
+
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(config.ROOT / "static" / "sw.js", media_type="text/javascript",
+                        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
+
+
 @app.get("/api/items/{item_id}/accuracy")
 def accuracy(item_id: int):
     _item_or_404(item_id)
