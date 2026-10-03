@@ -129,3 +129,23 @@ CREATE TABLE IF NOT EXISTS deliveries (
     delivered_at TIMESTAMPTZ NOT NULL,
     picked_up_at TIMESTAMPTZ NOT NULL
 );
+
+-- ---------------------------------------------------------------- hyperfunctions (optional)
+DO $$ BEGIN
+    CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'timescaledb_toolkit not available: time-weighted averages disabled';
+END $$;
+
+-- ---------------------------------------------------------------- alerts (written by the check_alerts job)
+CREATE TABLE IF NOT EXISTS alerts (
+    id          SERIAL PRIMARY KEY,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    item_id     INT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL,      -- frozen | above_limit | budget_exhausted | budget_low | sensor_silent | outage
+    severity    TEXT NOT NULL,      -- critical | warning
+    message     TEXT NOT NULL,
+    resolved_at TIMESTAMPTZ,
+    acked       BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS alerts_open ON alerts (item_id, kind) WHERE resolved_at IS NULL;

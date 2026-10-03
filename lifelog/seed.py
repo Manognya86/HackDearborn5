@@ -127,7 +127,7 @@ def run(with_weather: bool = True) -> dict:
     t_end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     t_start = t_end - timedelta(hours=72)
     with db.conn() as c:
-        c.execute("""TRUNCATE readings, ingest_log, items, products, users, refuges, outages, pattern_library,
+        c.execute("""TRUNCATE alerts, readings, ingest_log, items, products, users, refuges, outages, pattern_library,
                      deliveries, weather_hourly, zips RESTART IDENTITY CASCADE""")
         c.execute("TRUNCATE readings_5m")  # materialized rows survive a raw-table truncate
         pid = {}
@@ -182,7 +182,9 @@ def run(with_weather: bool = True) -> dict:
     with db.conn(autocommit=True) as c:
         # leave the in-progress bucket to real-time aggregation
         c.execute("CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
-    return {"readings": n, "items": len(iid), "users": len(uid), **porch}
+    compressed = compress_history()
+    check_alerts()
+    return {"readings": n, "items": len(iid), "users": len(uid), "compressed_chunks": compressed, **porch}
 
 
 def seed_porch(with_weather: bool) -> dict:
@@ -294,15 +296,40 @@ def scenario_clear_storm() -> dict:
 
 
 def add_policy() -> None:
+    """Background jobs Tiger runs for us: aggregate refresh, compression, retention, alert checks."""
     with db.conn(autocommit=True) as c:
         c.execute(f"""SELECT add_continuous_aggregate_policy('readings_5m',
                         start_offset => INTERVAL '{config.POLICY_START_OFFSET}',
                         end_offset => INTERVAL '5 minutes',
                         schedule_interval => INTERVAL '1 minute', if_not_exists => TRUE)""")
+        enabled = c.execute("""SELECT compression_enabled FROM timescaledb_information.hypertables
+                               WHERE hypertable_name = 'readings'""").fetchone()
+        if enabled and not enabled["compression_enabled"]:
+            c.execute("""ALTER TABLE readings SET (timescaledb.compress,
+                            timescaledb.compress_segmentby = 'item_id',
+                            timescaledb.compress_orderby = 'ts DESC')""")
+        c.execute("SELECT add_compression_policy('readings', INTERVAL '2 days', if_not_exists => TRUE)")
+        c.execute("SELECT add_retention_policy('readings', INTERVAL '400 days', if_not_exists => TRUE)")
+        c.execute("SELECT add_retention_policy('weather_hourly', INTERVAL '400 days', if_not_exists => TRUE)")
+        if not c.execute("SELECT 1 FROM timescaledb_information.jobs WHERE proc_name = 'check_alerts'").fetchone():
+            c.execute("SELECT add_job('check_alerts', INTERVAL '1 minute')")
+
+
+def check_alerts() -> None:
+    with db.conn(autocommit=True) as c:
+        c.execute("CALL check_alerts()")
+
+
+def compress_history() -> int:
+    """Compress every chunk older than a day now, instead of waiting for the policy."""
+    with db.conn(autocommit=True) as c:
+        rows = c.execute("""SELECT compress_chunk(ch, if_not_compressed => TRUE) AS ch
+                            FROM show_chunks('readings', older_than => now() - INTERVAL '1 day') ch""").fetchall()
+    return len(rows)
 
 
 def apply_schema() -> None:
     with db.conn(autocommit=True) as c:
-        c.execute((config.ROOT / "sql" / "schema.sql").read_text())
-        c.execute((config.ROOT / "sql" / "functions.sql").read_text())
+        c.execute((config.ROOT / "sql" / "schema.sql").read_text(encoding="utf-8"))
+        c.execute((config.ROOT / "sql" / "functions.sql").read_text(encoding="utf-8"))
     add_policy()

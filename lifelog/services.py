@@ -73,6 +73,9 @@ def item_detail(item_id: int, raw: bool = False) -> dict | None:
         "gaps": gaps,
         "whatif": engine.whatif(state["remaining"], cur, m),
         "patterns": similar_patterns([r["avg_temp"] for r in timeline[-12 * 72:]]),
+        "stats": item_stats(item_id, item["started_at"]),
+        "zones": zone_minutes(episodes),
+        "alerts": db.query("SELECT * FROM alerts WHERE item_id = %s AND resolved_at IS NULL", (item_id,)),
     }
 
 
@@ -251,3 +254,78 @@ def porch_stats() -> list[dict]:
         FROM d JOIN zips z USING (zip)
         GROUP BY z.zip, z.name, z.lat, z.lon, d.carrier
         ORDER BY avg_hot_hours DESC""")
+
+
+# ------------------------------------------------------------------ exposure statistics
+def item_stats(item_id: int, started_at: datetime) -> dict:
+    s = db.one("SELECT * FROM item_stats(%s)", (item_id,)) or {}
+    try:  # timescaledb_toolkit hyperfunction: time-weighted mean over the raw readings
+        twa = db.one("""SELECT average(time_weight('LOCF', ts, temp_c)) AS twa FROM readings
+                        WHERE item_id = %s AND ts >= %s""", (item_id, started_at))["twa"]
+    except Exception:
+        twa = None
+    return {**s, "time_weighted_avg_c": twa}
+
+
+def zone_minutes(episodes: list[dict]) -> list[dict]:
+    out: dict[str, dict] = {}
+    for e in episodes:
+        z = out.setdefault(e["zone"], {"zone": e["zone"], "minutes": 0.0, "burn": 0.0})
+        z["minutes"] += e["minutes"]
+        z["burn"] += e["burn"]
+    return sorted(out.values(), key=lambda z: -z["minutes"])
+
+
+# ------------------------------------------------------------------ alerts
+def alerts(mine_only: bool = False, include_resolved: bool = False) -> list[dict]:
+    return db.query("""
+        SELECT a.*, i.nickname, u.name AS user_name, u.is_me
+        FROM alerts a JOIN items i ON i.id = a.item_id JOIN users u ON u.id = i.user_id
+        WHERE (%(all)s OR a.resolved_at IS NULL) AND (NOT %(mine)s OR u.is_me)
+        ORDER BY a.resolved_at IS NOT NULL, a.severity = 'warning', a.created_at DESC
+        LIMIT 100""", {"all": include_resolved, "mine": mine_only})
+
+
+def check_alerts() -> None:
+    with db.conn(autocommit=True) as c:
+        c.execute("CALL check_alerts()")
+
+
+# ------------------------------------------------------------------ under the hood
+def _try(sql: str, params=None):
+    try:
+        return db.query(sql, params)
+    except Exception as e:  # noqa: BLE001
+        return [{"error": str(e).splitlines()[0]}]
+
+
+def tiger_stats() -> dict:
+    import time
+
+    def timed(raw: bool) -> float:
+        t = time.perf_counter()
+        db.query("""SELECT i.id, (SELECT used FROM item_timeline(i.id, %s) ORDER BY bucket DESC LIMIT 1)
+                    FROM items i""", (raw,))
+        return round((time.perf_counter() - t) * 1000, 1)
+
+    timed(False)  # warm up
+    return {
+        "hypertables": _try("""
+            SELECT h.hypertable_name AS name, h.num_chunks AS chunks, h.compression_enabled,
+                   hypertable_size((quote_ident(h.hypertable_schema) || '.' || quote_ident(h.hypertable_name))::regclass) AS bytes,
+                   CASE h.hypertable_name WHEN 'readings' THEN (SELECT count(*) FROM readings)
+                        WHEN 'weather_hourly' THEN (SELECT count(*) FROM weather_hourly) END AS rows
+            FROM timescaledb_information.hypertables h ORDER BY bytes DESC"""),
+        "compression": (_try("SELECT * FROM hypertable_compression_stats('readings')") or [{}])[0],
+        "caggs": _try("""SELECT view_name, materialized_only, materialization_hypertable_name
+                         FROM timescaledb_information.continuous_aggregates"""),
+        "jobs": _try("""
+            SELECT j.job_id, j.proc_name, j.hypertable_name, j.schedule_interval::text AS every,
+                   s.last_run_status, s.last_run_started_at, s.next_start, s.total_runs, s.total_failures
+            FROM timescaledb_information.jobs j
+            LEFT JOIN timescaledb_information.job_stats s USING (job_id)
+            WHERE j.job_id >= 1000 ORDER BY j.job_id"""),
+        "extensions": _try("SELECT extname, extversion FROM pg_extension ORDER BY extname"),
+        "watermark": cagg_watermark(),
+        "benchmark_ms": {"continuous_aggregate": timed(False), "raw_readings": timed(True)},
+    }
