@@ -52,6 +52,18 @@ def _text(contents, system: str, tools=None, temperature: float = 0.4) -> str:
 SAFETY = ("You are not a doctor or pharmacist. Never invent label rules. When unsure, tell the person "
           "to ask their pharmacist. Be concise and concrete.")
 
+LANGUAGES = {"en": "English", "ar": "Arabic", "es": "Spanish", "bn": "Bengali"}
+
+
+def _lang(lang: str | None) -> str:
+    """Instruction appended to prompts so answers come back in the reader's language
+    (Dearborn has large Arabic-, Spanish- and Bengali-speaking communities)."""
+    name = LANGUAGES.get((lang or "en").lower(), "English")
+    if name == "English":
+        return ""
+    return (f" Write every human-readable sentence in {name}. Keep medicine names, numbers, units and any "
+            f"verbatim label quotes exactly as given (quotes stay in their original language).")
+
 # ------------------------------------------------------------------ label -> stability model
 LABEL_SYSTEM = f"""You read medication packaging, package inserts and prescribing information and
 extract the STORAGE and STABILITY rules into a machine-readable model.
@@ -72,6 +84,36 @@ def extract_label(data: bytes, mime_type: str) -> dict:
     return _structured(parts, StabilityModel, LABEL_SYSTEM, temperature=0.0)
 
 
+def extract_label_text(product: str, storage_text: str) -> dict:
+    """Same extraction, from the text of an official label section (e.g. openFDA 'storage_and_handling')."""
+    prompt = (f"Medication: {product}\n\nOfficial label text (Section 16, storage and handling):\n{storage_text}\n\n"
+              "Extract the storage and stability model. If the label lists several presentations, use the most common "
+              "patient-held one (pen or vial) and say which in notes.")
+    return _structured(prompt, StabilityModel, LABEL_SYSTEM, temperature=0.0)
+
+
+def search_label(name: str) -> dict:
+    """Grounded fallback: Google Search + URL Context find the official prescribing information and copy its
+    storage section verbatim. Returns the text plus the web sources Gemini actually used."""
+    system = ("Find the official FDA prescribing information for the medication (prefer dailymed.nlm.nih.gov, "
+              "accessdata.fda.gov or the manufacturer). Copy the storage and handling section VERBATIM, then on the last "
+              "line write SOURCE: <url>. If you cannot find an official source, say NOT FOUND.")
+    resp = client().models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=f"Medication: {name}",
+        config=types.GenerateContentConfig(
+            system_instruction=system, temperature=0.0,
+            tools=[types.Tool(google_search=types.GoogleSearch()), types.Tool(url_context=types.UrlContext())]),
+    )
+    sources = []
+    for cand in resp.candidates or []:
+        gm = getattr(cand, "grounding_metadata", None)
+        for ch in (gm.grounding_chunks or []) if gm else []:
+            if ch.web and ch.web.uri:
+                sources.append({"title": ch.web.title, "url": ch.web.uri})
+    return {"text": resp.text or "", "sources": sources}
+
+
 # ------------------------------------------------------------------ voice / free text reports
 def parse_voice(now: datetime, items: list[dict], audio: bytes | None = None,
                 mime_type: str = "audio/wav", text: str | None = None) -> dict:
@@ -87,32 +129,33 @@ def parse_voice(now: datetime, items: list[dict], audio: bytes | None = None,
 
 
 # ------------------------------------------------------------------ verdict
-def advise(state: dict) -> dict:
+def advise(state: dict, lang: str | None = None) -> dict:
     system = f"""You explain a medicine's remaining stability budget to a patient.
 You get the label-derived model (with verbatim quotes), the computed life budget, the exposure
 episodes that consumed it, data gaps, what-if options and similar historical exposure patterns.
 Ground every claim in those numbers and quotes. Mention data gaps if any.
 verdict: USE (budget healthy), USE_SOON (budget getting low or burning now), ASK_PHARMACIST (uncertain,
 data gaps, or label-based assumption drives the result), DO_NOT_USE (frozen, or budget exhausted).
-{SAFETY}"""
+{SAFETY}""" + _lang(lang) + " The verdict field stays one of the four English codes."
     return _structured(json.dumps(state, default=str), Verdict, system)
 
 
-def visual_check(photo: bytes, mime_type: str, model: dict) -> dict:
+def visual_check(photo: bytes, mime_type: str, model: dict, lang: str | None = None) -> dict:
     system = (f"Compare this photo of a medication against the label's visual warnings: "
-              f"{json.dumps(model.get('visual_checks', []))}. Describe only what you can see. {SAFETY}")
+              f"{json.dumps(model.get('visual_checks', []))}. Describe only what you can see. {SAFETY}" + _lang(lang))
     parts = [types.Part.from_bytes(data=photo, mime_type=mime_type), "Inspect this medication."]
     return _structured(parts, VisualCheck, system)
 
 
 # ------------------------------------------------------------------ outage rescue
-def rescue_plan(at_risk: list[dict], outage: dict) -> str:
+def rescue_plan(at_risk: list[dict], outage: dict, lang: str | None = None) -> str:
     system = f"""You coordinate a neighborhood medicine rescue during a power outage.
 For each at-risk person (already ranked by hours of medicine life left), write:
 1. a priority line (name, medicine, hours left vs hours until power is restored),
 2. which refuge to use (choose from the candidates given, nearest first unless a reason not to),
 3. a short, calm SMS (<= 300 chars) to send them.
-Finish with a one-paragraph summary for the emergency coordinator. Use markdown. {SAFETY}"""
+Finish with a one-paragraph summary for the emergency coordinator. Use markdown. {SAFETY}""" + (
+        _lang(lang).replace("every human-readable sentence", "each SMS") + " Keep the coordinator summary in English." if _lang(lang) else "")
     contents = json.dumps({"outage": outage, "at_risk": at_risk}, default=str)
     tools = None
     try:
@@ -123,12 +166,14 @@ Finish with a one-paragraph summary for the emergency coordinator. Use markdown.
 
 
 # ------------------------------------------------------------------ insurance / refill letter
-def refill_letter(ctx: dict) -> str:
+def refill_letter(ctx: dict, lang: str | None = None) -> str:
     system = f"""Write a concise early-refill / replacement request letter that a patient can hand to their
 pharmacist or insurer, because their medication was exposed to temperatures outside its labeled
 storage conditions. Include: patient placeholder fields in [brackets], the product, a dated exposure
 timeline from the data, the exact label text that was exceeded (quoted), the outage reference if any,
-and a polite request. Do not exaggerate. Plain text letter format. {SAFETY}"""
+and a polite request. Do not exaggerate. Plain text letter format. {SAFETY}""" + (
+        f" Write the letter in English (for the pharmacist), then add a short summary for the patient in "
+        f"{LANGUAGES.get((lang or 'en').lower(), 'English')}." if _lang(lang) else "")
     return _text(json.dumps(ctx, default=str), system, temperature=0.3)
 
 
@@ -140,10 +185,10 @@ def parse_trip(itinerary: str, now: datetime) -> dict:
     return _structured(itinerary, TripPlan, system)
 
 
-def trip_advice(sim: dict) -> str:
+def trip_advice(sim: dict, lang: str | None = None) -> str:
     system = f"""Given a simulated trip exposure for a medicine (per-leg temperatures and budget use),
 give 3-5 bullet points of practical advice: which legs are the risk, what to change, what to pack.
-Reference the label quotes. {SAFETY}"""
+Reference the label quotes. {SAFETY}""" + _lang(lang)
     return _text(json.dumps(sim, default=str), system)
 
 

@@ -47,7 +47,8 @@ def summary(item_id: int, model: dict, raw: bool = False) -> dict:
 
 def item_detail(item_id: int, raw: bool = False) -> dict | None:
     item = db.one("""
-        SELECT i.*, p.name AS product_name, p.model, p.source AS product_source, u.name AS user_name
+        SELECT i.*, p.name AS product_name, p.model, p.source AS product_source, p.source_label, p.source_url,
+               u.name AS user_name
         FROM items i JOIN products p ON p.id = i.product_id JOIN users u ON u.id = i.user_id
         WHERE i.id = %s""", (item_id,))
     if not item:
@@ -318,6 +319,14 @@ def _try(sql: str, params=None):
         return [{"error": str(e).splitlines()[0]}]
 
 
+def _compression_stats() -> dict:
+    for fn in ("hypertable_columnstore_stats", "hypertable_compression_stats"):  # new name first (2.18+)
+        row = _try(f"SELECT * FROM {fn}('readings')")
+        if row and "error" not in row[0]:
+            return row[0]
+    return {}
+
+
 def tiger_stats() -> dict:
     import time
 
@@ -335,7 +344,7 @@ def tiger_stats() -> dict:
                    CASE h.hypertable_name WHEN 'readings' THEN (SELECT count(*) FROM readings)
                         WHEN 'weather_hourly' THEN (SELECT count(*) FROM weather_hourly) END AS rows
             FROM timescaledb_information.hypertables h ORDER BY bytes DESC"""),
-        "compression": (_try("SELECT * FROM hypertable_compression_stats('readings')") or [{}])[0],
+        "compression": _compression_stats(),
         "caggs": _try("""SELECT view_name, materialized_only, materialization_hypertable_name
                          FROM timescaledb_information.continuous_aggregates"""),
         "jobs": _try("""
@@ -348,6 +357,45 @@ def tiger_stats() -> dict:
         "watermark": cagg_watermark(),
         "benchmark_ms": {"continuous_aggregate": timed(False), "raw_readings": timed(True)},
     }
+
+
+# ------------------------------------------------------------------ official label lookup (openFDA)
+OPENFDA = "https://api.fda.gov/drug/label.json"
+
+
+def openfda_lookup(name: str) -> dict | None:
+    """Find the manufacturer's FDA label and return its storage section verbatim. Repackager labels often
+    omit storage details, so candidates without real storage text are skipped."""
+    import re
+
+    import httpx
+    q = name.strip().replace('"', "")
+    for field in ("openfda.brand_name", "openfda.generic_name"):
+        try:
+            r = httpx.get(OPENFDA, params={"search": f'{field}:"{q}"', "limit": 10}, timeout=15)
+            if r.status_code != 200:
+                continue
+            results = r.json().get("results", [])
+        except httpx.HTTPError:
+            return None
+        for lab in results:
+            text = " ".join(lab.get("storage_and_handling", []) or lab.get("how_supplied", []) or [])
+            text = re.sub(r"\s+", " ", text)
+            if len(text) < 200 or not re.search(r"refrigerat|store (at|between|in)|°C", text, re.I):
+                continue
+            start = max(text.lower().find("storage"), 0)
+            ofda = lab.get("openfda", {})
+            eff = lab.get("effective_time", "")
+            return {
+                "brand": (ofda.get("brand_name") or [q])[0], "generic": (ofda.get("generic_name") or [""])[0],
+                "manufacturer": (ofda.get("manufacturer_name") or [""])[0], "set_id": lab.get("set_id"),
+                "effective": eff, "text": text[start:start + 6000],
+                "route": ", ".join(ofda.get("route") or []).lower(),
+                "source_label": f"{(ofda.get('brand_name') or [q])[0]} ({', '.join(ofda.get('route') or []).lower() or 'route n/a'}) "
+                                f"prescribing information, FDA label version {eff[:4]}-{eff[4:6]}-{eff[6:]}",
+                "source_url": f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={lab.get('set_id')}",
+            }
+    return None
 
 
 # ------------------------------------------------------------------ precautions
