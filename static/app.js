@@ -51,7 +51,7 @@ document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-view]");
   if (b) { show(b.dataset.view); return; }
   if (e.target.closest("#more-btn")) $("#sheet").hidden = false;
-  else if (e.target.id === "sheet" || e.target.id === "help" || e.target.closest("[data-close]")) { $("#sheet").hidden = true; $("#help").hidden = true; }
+  else if (["sheet", "help", "share-sheet"].includes(e.target.id) || e.target.closest("[data-close]")) { $("#sheet").hidden = true; $("#help").hidden = true; $("#share-sheet").hidden = true; }
 });
 function show(view) {
   currentView = view;
@@ -145,7 +145,16 @@ async function openItem(id, { quiet = false } = {}) {
             <span>${s.stale_minutes > 20 ? "Last reading" : "Now"} <b>${temp(s.current_temp)}</b></span>
             <span>Allowed <b>${m.target_min_c}–${m.target_max_c}°C</b></span>
             <span>At this temperature it lasts <b>${hrs(s.hours_left)}</b></span>
+            ${d.dates.use_by ? `<span>Use by <b>${new Date(d.dates.use_by_date + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</b> <span class="muted">(${esc(d.dates.use_by_reason)})</span></span>` : ""}
+            <button class="btn" id="dates-btn" style="min-height:30px;padding:3px 10px;font-size:13px">Dates &amp; lot</button>
           </div>
+          <form id="dates-form" class="dates-form" hidden>
+            <label class="small">Opened / first used<input type="date" id="f-opened" value="${d.dates.opened_at ? d.dates.opened_at.slice(0, 10) : ""}"></label>
+            <label class="small">Expiration date<input type="date" id="f-expires" value="${d.dates.expires_on || ""}"></label>
+            <label class="small">Lot number<input type="text" id="f-lot" value="${esc(d.item.lot || "")}" placeholder="from the box"></label>
+            <button class="btn primary" type="submit">Save</button>
+            <p class="muted small" style="grid-column:1/-1">${m.in_use_days ? `The label allows ${Math.round(m.in_use_days)} days after opening, whatever the temperature.` : "This label gives no in-use limit after opening."} The lot number is checked against FDA recalls.</p>
+          </form>
           ${uncertain ? `<div class="range-note">The sensor missed ${hrs(d.gaps.reduce((a, g) => a + g.hours, 0))} of data, so the real budget could be as low as <b>${pct(d.worst_case)}</b> (if it sat at room temperature).</div>` : ""}
         </div>
       </div>
@@ -175,6 +184,14 @@ async function openItem(id, { quiet = false } = {}) {
         <summary>What used the budget <span class="muted">${d.burners.length ? `${d.burners.length} episode${d.burners.length === 1 ? "" : "s"}` : "nothing yet"}</span></summary>
         ${d.burners.length ? d.burners.map((b) => `<div class="burn-row"><div>${esc(b.zone)}<div class="muted small">${fmt(b.started)} · ${hrs(b.minutes / 60)} · peak ${temp(b.peak_temp)}</div></div>
           <div class="burn-bar" style="width:${(b.burn / maxBurn) * 100}%"></div><div class="num">−${pct(b.burn, 1)}</div></div>`).join("") : `<p class="muted">It has stayed within the label's limits.</p>`}
+      </details>
+      <details class="fold" data-k="history" ${openFolds.includes("history") ? "open" : ""}>
+        <summary>Last 30 days <span class="muted">daily exposure calendar</span></summary>
+        <div id="history-body" class="muted">Loading…</div>
+      </details>
+      <details class="fold" data-k="recalls" ${openFolds.includes("recalls") ? "open" : ""}>
+        <summary>FDA recalls <span class="muted">live from openFDA</span></summary>
+        <div id="recalls-body" class="muted">Loading…</div>
       </details>
       <details class="fold" data-k="whatif" ${openFolds.includes("whatif") ? "open" : ""}>
         <summary>What if you act now? <span class="muted">budget left after 12 hours</span></summary>
@@ -214,6 +231,21 @@ async function openItem(id, { quiet = false } = {}) {
   if (keepAi) $("#ai-box").innerHTML = keepAi;
   if ($("details[data-k=chart]").open) drawChart(d);
   $("details[data-k=chart]").addEventListener("toggle", (e) => e.target.open && drawChart(d));
+  for (const [k, fn] of [["history", loadHistory], ["recalls", loadRecalls]]) {
+    const el = $(`details[data-k=${k}]`);
+    if (el.open) fn(id);
+    el.addEventListener("toggle", () => el.open && fn(id));
+  }
+  $("#dates-btn").onclick = () => { $("#dates-form").hidden = !$("#dates-form").hidden; };
+  $("#dates-form").onsubmit = (e) => {
+    e.preventDefault();
+    busy(e.submitter, async () => {
+      const opened = $("#f-opened").value;
+      await api(`/api/items/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opened_at: opened ? new Date(opened + "T12:00:00").toISOString() : null, expires_on: $("#f-expires").value || null, lot: $("#f-lot").value }) });
+      toast("Saved"); await loadItems(); openItem(id, { quiet: true }); refreshBadge();
+    });
+  };
   const acc = $("details[data-k=accuracy]");
   if (acc.open) loadAccuracy(id);
   acc.addEventListener("toggle", () => acc.open && loadAccuracy(id));
@@ -243,6 +275,40 @@ function renderVerdict(v) {
   $("#ai-box").innerHTML = `<div class="ai-box" dir="auto"><div class="tag">${icon("spark")}Gemini · based on your data and the label</div>
     <div class="verdict ${esc(v.verdict)}">${esc(v.headline)}</div><p>${esc(v.explanation)}</p>
     <ul>${v.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>${v.cited_quotes.map((q) => `<blockquote>${esc(q)}</blockquote>`).join("")}</div>`;
+}
+
+async function loadHistory(id) {
+  const rows = await api(`/api/items/${id}/history?days=30`);
+  const byDay = new Map(rows.map((r) => [r.day.slice(0, 10), r]));
+  const today = new Date(); const cells = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(today); d.setUTCDate(d.getUTCDate() - i);
+    const key = d.toISOString().slice(0, 10), r = byDay.get(key);
+    const cls = !r ? "none" : r.burn >= 0.2 ? "b3" : r.burn >= 0.02 ? "b2" : r.burn >= 0.002 ? "b1" : "";
+    const tip = r ? `${key}: avg ${temp(r.avg_temp)}, peak ${temp(r.max_temp)}, used ${pct(r.burn, 1)} of the budget` : `${key}: no data`;
+    cells.push(`<div class="${cls}" title="${esc(tip)}" aria-label="${esc(tip)}">${+key.slice(8)}</div>`);
+  }
+  const worst = rows.reduce((a, r) => (r.burn > (a?.burn ?? -1) ? r : a), null);
+  $("#history-body").classList.remove("muted");
+  $("#history-body").innerHTML = `<div class="cal">${cells.join("")}</div>
+    <div class="cal-legend"><span><i style="background:var(--surface-2)"></i>none</span><span><i style="background:color-mix(in srgb,var(--warn) 25%,var(--surface-2))"></i>small</span>
+      <span><i style="background:color-mix(in srgb,var(--warn) 55%,var(--surface-2))"></i>noticeable (2%+)</span><span><i style="background:var(--bad)"></i>major (20%+)</span></div>
+    ${worst && worst.burn >= 0.002 ? `<p class="small">Biggest day: <b>${new Date(worst.day).toLocaleDateString([], { month: "short", day: "numeric", timeZone: "UTC" })}</b>, peak ${temp(worst.max_temp)}, used ${pct(worst.burn, 1)}.</p>` : `<p class="small">No meaningful exposure in the last 30 days.</p>`}
+    <p class="muted small">From a daily rollup built on the 5-minute rollup in Tiger Data (a hierarchical continuous aggregate).</p>`;
+}
+
+async function loadRecalls(id) {
+  const r = await api(`/api/items/${id}/recalls`);
+  $("#recalls-body").classList.remove("muted");
+  if (r.error) { $("#recalls-body").innerHTML = `<p class="small">Couldn't reach openFDA right now (${esc(r.error)}).</p>`; return; }
+  const ongoing = r.recalls.filter((x) => x.status === "Ongoing");
+  $("#recalls-body").innerHTML = (r.active_lot_match ? `<div class="banner bad"><b>An ongoing FDA recall lists your lot number.</b> Stop using it and contact your pharmacy.</div>` : "")
+    + (!r.total ? `<p class="small">${icon("check")} No FDA recalls on record for ${esc(r.brand)}.</p>`
+    : `<p class="small">${r.total} FDA recall${r.total === 1 ? "" : "s"} on record for ${esc(r.brand)}${ongoing.length ? `, <b>${ongoing.length} ongoing</b>` : ", none ongoing"}.
+        ${r.recalls.some((x) => x.temperature_related) ? "Some were for temperature problems, the exact risk LIFELOG watches." : ""}</p>`
+      + r.recalls.slice(0, 5).map((x) => `<div class="recall ${x.lot_match ? "match" : ""}"><b>${esc(x.report_date)}</b> · ${esc(x.classification)} · ${esc(x.status)}${x.lot_match ? " · <b>your lot</b>" : ""}
+          <div>${esc(x.reason)}</div><div class="muted small">Lots: ${esc(x.lots || "not listed")}</div></div>`).join(""))
+    + `<p class="muted small">Source: openFDA drug enforcement reports. ${esc(r.brand)} matched by brand name${r.recalls.length ? "; add your lot number under Dates & lot to check it" : ""}.</p>`;
 }
 
 async function loadAccuracy(id) {
@@ -468,6 +534,47 @@ $("#brief-btn").addEventListener("click", (e) => busy(e.currentTarget, async () 
   $("#porch-brief").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Gemini pharmacy brief</div>${md(r.brief)}</div>`;
 }));
 
+// ------------------------------------------------------------------ caregiver sharing
+async function loadShares() {
+  const list = await api("/api/shares");
+  $("#share-list").innerHTML = list.map((s) => `<div class="row between"><span>${esc(s.label || "Unnamed link")} · ${fmt(s.created_at)}</span>
+    <button class="btn" data-revoke="${esc(s.token)}">Turn off</button></div>`).join("") || "None yet.";
+  $$("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
+    await api(`/api/share/${b.dataset.revoke}`, { method: "DELETE" }); toast("Link turned off"); $("#share-out").innerHTML = ""; loadShares();
+  }));
+}
+$("#share-btn").addEventListener("click", () => { $("#share-sheet").hidden = false; loadShares(); });
+$("#share-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  busy(e.submitter, async () => {
+    const { token } = await post("/api/share", { label: $("#share-label").value || null });
+    const url = `${location.origin}/s/${token}`;
+    $("#share-out").innerHTML = `<div id="qr"></div><div class="link-box">${esc(url)}</div>
+      <div class="row"><button class="btn primary" id="copy-share">Copy link</button>${navigator.share ? `<button class="btn" id="native-share">Send…</button>` : ""}</div>`;
+    if (window.QRCode) new QRCode($("#qr"), { text: url, width: 160, height: 160 });
+    $("#copy-share").onclick = () => navigator.clipboard.writeText(url).then(() => toast("Copied"));
+    $("#native-share")?.addEventListener("click", () => navigator.share({ title: "LIFELOG", text: "My medicine status", url }));
+    loadShares();
+  });
+});
+
+// ------------------------------------------------------------------ notifications + offline (service worker)
+let swReg = null;
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").then((r) => (swReg = r)).catch(() => {});
+function notifyLabel() {
+  if (!("Notification" in window)) { $("#notify-btn").hidden = true; return; }
+  $("#notify-btn").textContent = Notification.permission === "granted" ? "Notifications on" : Notification.permission === "denied" ? "Notifications blocked" : "Turn on notifications";
+  $("#notify-btn").disabled = Notification.permission !== "default";
+}
+$("#notify-btn").addEventListener("click", async () => { await Notification.requestPermission(); notifyLabel(); if (Notification.permission === "granted") toast("You'll get a notification for critical alerts"); });
+notifyLabel();
+async function systemNotify(a) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const reg = swReg || (await navigator.serviceWorker?.ready.catch(() => null));
+  const opts = { body: a.message, icon: "/static/icon.svg", badge: "/static/icon.svg", tag: `alert-${a.item_id}-${a.kind}` };
+  try { reg ? await reg.showNotification("LIFELOG", opts) : new Notification("LIFELOG", opts); } catch { /* unsupported */ }
+}
+
 // ------------------------------------------------------------------ alerts
 async function refreshBadge() {
   try {
@@ -586,7 +693,10 @@ function connectLive() {
     const a = JSON.parse(e.data);
     refreshBadge();
     if (currentView === "alerts") loaders.alerts();
-    if (!a.resolved && a.severity === "critical" && myItems.some((i) => i.id === a.item_id)) toast(a.message, "critical");
+    if (!a.resolved && a.severity === "critical" && myItems.some((i) => i.id === a.item_id)) {
+      toast(a.message, "critical");
+      if (document.hidden || isMobile()) systemNotify(a);
+    }
   });
   es.onerror = () => { $("#live").textContent = "Reconnecting…"; $("#live").classList.remove("on"); };
 }

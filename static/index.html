@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="/static/style.css?v=7">
+<link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -74,7 +74,8 @@
     <main>
       <!-- ======================================================= medicines -->
       <section id="view-meds" class="view active">
-        <div id="meds-summary" class="summary"></div>
+        <div class="row between summary-row"><div id="meds-summary" class="summary"></div>
+          <button id="share-btn" class="btn">Share with a caregiver</button></div>
         <div class="meds-layout">
           <div id="item-list" class="med-grid"></div>
           <div id="item-detail" class="detail"></div>
@@ -87,6 +88,7 @@
           <div class="row between">
             <p class="muted">Checked every minute by a job inside Tiger Data, and within seconds of new readings.</p>
             <div class="row">
+              <button id="notify-btn" class="btn">Turn on notifications</button>
               <label class="toggle"><input type="checkbox" id="alerts-all"> Whole neighborhood</label>
               <button id="alerts-check" class="btn">Check now</button>
             </div>
@@ -239,6 +241,17 @@
   </div>
 </div>
 
+<div id="share-sheet" class="sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-labelledby="share-title">
+    <div class="row between"><h2 id="share-title">Share with a caregiver</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <p class="muted">They see each medicine's status, use-by date and open alerts, live. Read-only, no location. Turn it off anytime.</p>
+    <form id="share-form" class="composer"><input type="text" id="share-label" placeholder="Who is it for? e.g. Mom" aria-label="Who is it for"><button class="btn primary" type="submit">Create link</button></form>
+    <div id="share-out"></div>
+    <h3>Active links</h3>
+    <div id="share-list" class="muted small">None yet.</div>
+  </div>
+</div>
+
 <div id="help" class="sheet" hidden>
   <div class="sheet-panel help" role="dialog" aria-labelledby="help-title">
     <div class="row between"><h2 id="help-title">How to read LIFELOG</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
@@ -262,6 +275,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
-<script src="/static/app.js?v=10"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="/static/app.js?v=11"></script>
 </body>
 </html>

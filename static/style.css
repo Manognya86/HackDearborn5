@@ -191,6 +191,22 @@ blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--bran
 .source { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
 .label-text { font-size: 13px; color: var(--muted); max-height: 160px; overflow: auto; background: var(--surface-2); border-radius: 10px; padding: 10px; }
 
+.summary-row { margin: 0 0 14px; } .summary-row .summary { margin: 0; }
+.cal { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 5px; margin: 6px 0 4px; }
+.cal div { aspect-ratio: 1; border-radius: 7px; background: var(--surface-2); display: grid; place-items: center; font-size: 11px; color: var(--muted); position: relative; }
+.cal div.b1 { background: color-mix(in srgb, var(--warn) 25%, var(--surface-2)); color: var(--text); }
+.cal div.b2 { background: color-mix(in srgb, var(--warn) 55%, var(--surface-2)); color: var(--text); }
+.cal div.b3 { background: var(--bad); color: #fff; }
+.cal div.none { opacity: .35; }
+.cal-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); align-items: center; }
+.cal-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.recall { padding: 10px 12px; border-radius: 10px; background: var(--surface-2); margin: 6px 0; font-size: 14px; }
+.recall.match { background: var(--bad-soft); border: 1px solid var(--bad); }
+.dates-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; align-items: end; margin-top: 10px; }
+.dates-form input { width: 100%; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 10px; min-height: 40px; color: var(--text); }
+#qr { background: #fff; padding: 10px; border-radius: 10px; display: inline-block; margin: 10px 0; }
+.link-box { word-break: break-all; font-size: 13px; background: var(--surface-2); padding: 8px 10px; border-radius: 8px; }
+
 /* alerts list */
 .alert { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; margin: 8px 0; border: 1px solid var(--border); background: var(--surface); }
 .alert svg { width: 20px; height: 20px; margin-top: 1px; }
