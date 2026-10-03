@@ -146,18 +146,18 @@ def repair(item_id: int):
 
 
 @app.post("/api/items/{item_id}/advice")
-def advice(item_id: int):
-    return gem.advise(_llm_state(_item_or_404(item_id)))
+def advice(item_id: int, lang: str = "en"):
+    return gem.advise(_llm_state(_item_or_404(item_id)), lang)
 
 
 @app.post("/api/items/{item_id}/visual")
-async def visual(item_id: int, photo: UploadFile = File(...)):
+async def visual(item_id: int, photo: UploadFile = File(...), lang: str = "en"):
     d = _item_or_404(item_id)
-    return gem.visual_check(await photo.read(), photo.content_type or "image/jpeg", d["item"]["model"])
+    return gem.visual_check(await photo.read(), photo.content_type or "image/jpeg", d["item"]["model"], lang)
 
 
 @app.post("/api/items/{item_id}/letter")
-def letter(item_id: int):
+def letter(item_id: int, lang: str = "en"):
     d = _item_or_404(item_id)
     outage = db.one("""SELECT o.id, o.name, o.started_at, o.est_restore_at FROM outages o
                        JOIN users u ON ST_Contains(o.area, u.geom) JOIN items i ON i.user_id = u.id
@@ -169,7 +169,7 @@ def letter(item_id: int):
            "label_rules": {k: m.get(k) for k in ("target_quote", "bands", "freeze_quote", "above_limit_quote",
                                                   "above_limit_is_assumption")},
            "outage": outage, "data_gaps": d["gaps"], "generated_at": services.now()}
-    return {"letter": gem.refill_letter(ctx)}
+    return {"letter": gem.refill_letter(ctx, lang)}
 
 
 class TripIn(BaseModel):
@@ -177,11 +177,11 @@ class TripIn(BaseModel):
 
 
 @app.post("/api/items/{item_id}/trip")
-def trip(item_id: int, body: TripIn):
+def trip(item_id: int, body: TripIn, lang: str = "en"):
     _item_or_404(item_id)
     plan = gem.parse_trip(body.itinerary, services.now())
     sim = services.simulate_trip(item_id, plan["legs"])
-    sim["advice"] = gem.trip_advice(sim)
+    sim["advice"] = gem.trip_advice(sim, lang)
     return sim
 
 
@@ -192,16 +192,41 @@ async def extract(label: UploadFile = File(...)):
     return gem.extract_label(data, label.content_type or "application/pdf")
 
 
+class LookupIn(BaseModel):
+    name: str
+
+
+@app.post("/api/products/lookup")
+def lookup(body: LookupIn):
+    """Add a medicine by name: the official FDA label from openFDA first (exact text, no guessing); if openFDA
+    has no usable storage section, Gemini searches the web with Google Search + URL Context grounding."""
+    hit = services.openfda_lookup(body.name)
+    if hit:
+        model = gem.extract_label_text(f"{hit['brand']} ({hit['generic']})", hit["text"])
+        return {"model": model, "method": "openfda", "source_label": hit["source_label"], "source_url": hit["source_url"],
+                "sources": [{"title": hit["source_label"], "url": hit["source_url"]}], "label_text": hit["text"][:1500]}
+    found = gem.search_label(body.name)
+    if "NOT FOUND" in found["text"][:200] or not found["text"].strip():
+        raise HTTPException(404, f"No official storage information found for '{body.name}'. Try uploading a photo of the label.")
+    model = gem.extract_label_text(body.name, found["text"])
+    first = found["sources"][0] if found["sources"] else {"title": "Google Search", "url": None}
+    return {"model": model, "method": "google_search", "source_label": f"{first['title']} (found by Gemini web search)",
+            "source_url": first["url"], "sources": found["sources"], "label_text": found["text"][:1500]}
+
+
 class NewItem(BaseModel):
     model: StabilityModel
     nickname: str
+    source_label: str | None = None
+    source_url: str | None = None
 
 
 @app.post("/api/products")
 def create_product(body: NewItem):
     m = body.model.model_dump()
-    pid = db.one("INSERT INTO products (name, model, source) VALUES (%s, %s, 'gemini') RETURNING id",
-                 (m["product_name"], json.dumps(m)))["id"]
+    pid = db.one("""INSERT INTO products (name, model, source, source_label, source_url)
+                    VALUES (%s, %s, 'gemini', %s, %s) RETURNING id""",
+                 (m["product_name"], json.dumps(m), body.source_label, body.source_url))["id"]
     me = db.one("SELECT id FROM users WHERE is_me")
     iid = db.one("INSERT INTO items (user_id, product_id, nickname, started_at) VALUES (%s,%s,%s, now() - interval '1 hour') RETURNING id",
                  (me["id"], pid, body.nickname))["id"]
@@ -257,11 +282,11 @@ def rescue():
 
 
 @app.post("/api/rescue/plan")
-def rescue_plan():
+def rescue_plan(lang: str = "en"):
     r = services.rescue()
     at_risk = [p for p in r["people"] if p["at_risk"]] or r["people"][:5]
     outage = r["outages"]["features"][0]["properties"] if r["outages"]["features"] else {}
-    return {"plan": gem.rescue_plan(at_risk[:10], outage)}
+    return {"plan": gem.rescue_plan(at_risk[:10], outage, lang)}
 
 
 # ------------------------------------------------------------------ porch heat index
@@ -316,8 +341,8 @@ class AskIn(BaseModel):
 
 
 @app.post("/api/ask")
-def ask(body: AskIn):
-    return assistant.ask(body.question, body.history)
+def ask(body: AskIn, lang: str = "en"):
+    return assistant.ask(body.question, body.history, lang)
 
 
 # ------------------------------------------------------------------ demo controls

@@ -68,14 +68,14 @@ SYSTEM = f"""You are LIFELOG, an assistant that helps a patient understand the r
 Quote the label text when it matters. Give short, concrete answers with the numbers. {gem.SAFETY}"""
 
 
-def ask(question: str, history: list[dict] | None = None) -> dict:
+def ask(question: str, history: list[dict] | None = None, lang: str | None = None) -> dict:
     contents = []
     for turn in (history or [])[-8:]:
         contents.append(types.Content(role=turn["role"], parts=[types.Part(text=turn["text"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=question)]))
     resp = gem.client().models.generate_content(
         model=config.GEMINI_MODEL, contents=contents,
-        config=types.GenerateContentConfig(system_instruction=SYSTEM, tools=TOOLS, temperature=0.2),
+        config=types.GenerateContentConfig(system_instruction=SYSTEM + gem._lang(lang), tools=TOOLS, temperature=0.2),
     )
     calls = []
     for c in resp.automatic_function_calling_history or []:
