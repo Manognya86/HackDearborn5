@@ -1,0 +1,10 @@
+{
+  "name": "LIFELOG Home",
+  "short_name": "LIFELOG",
+  "description": "How much safe life your temperature-sensitive medicines have left.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f5",
+  "theme_color": "#0f6e56",
+  "icons": [{ "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
