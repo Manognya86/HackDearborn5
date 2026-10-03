@@ -3,11 +3,11 @@ import json
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import assistant, config, db, engine, gem, seed, services, sim
+from . import assistant, config, db, engine, gem, realtime, seed, services, sim
 from .models import StabilityModel
 
 app = FastAPI(title="LIFELOG Home")
@@ -22,6 +22,16 @@ async def _no_gemini(_: Request, exc: gem.GeminiUnavailable):
 @app.get("/")
 def index():
     return FileResponse(config.ROOT / "static" / "index.html")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return FileResponse(config.ROOT / "static" / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.on_event("startup")
+def _start_realtime():
+    realtime.start()
 
 
 def _item_or_404(item_id: int, raw: bool = False) -> dict:
@@ -72,6 +82,60 @@ def compare(item_id: int):
     return {"aggregate": services.summary(item_id, m), "raw_truth": services.summary(item_id, m, raw=True),
             "watermark": services.cagg_watermark(),
             "log": db.query("SELECT * FROM ingest_log WHERE item_id = %s ORDER BY id DESC LIMIT 5", (item_id,))}
+
+
+@app.get("/api/items/{item_id}/accuracy")
+def accuracy(item_id: int):
+    _item_or_404(item_id)
+    return services.accuracy(item_id)
+
+
+@app.get("/api/items/{item_id}/export.csv")
+def export_csv(item_id: int):
+    """Exposure log a pharmacist can open in a spreadsheet: one row per 5-minute bucket."""
+    import csv
+    import io
+    d = _item_or_404(item_id)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["bucket_start_utc", "avg_temp_c", "min_temp_c", "max_temp_c", "zone", "budget_left_pct"])
+    for r in d["timeline"]:
+        w.writerow([r["t"].isoformat(), f"{r['temp']:.2f}", f"{r['min']:.2f}", f"{r['max']:.2f}", r["zone"],
+                    f"{r['remaining'] * 100:.2f}"])
+    name = "".join(ch if ch.isalnum() else "-" for ch in d["item"]["nickname"]).strip("-").lower()
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="lifelog-{name}.csv"'})
+
+
+@app.get("/api/stream")
+def stream():
+    """Server-Sent Events: 'readings' when new data lands (throttled to 1/s), 'alert' when an alert
+    opens, changes or resolves. Driven by Postgres LISTEN/NOTIFY triggers."""
+    import json as _json
+    import queue as _queue
+    import time as _time
+
+    def gen():
+        q = realtime.subscribe()
+        last = 0.0
+        try:
+            yield "retry: 3000\nevent: hello\ndata: {}\n\n"
+            while True:
+                try:
+                    ev = q.get(timeout=15)
+                except _queue.Empty:
+                    yield ": keep-alive\n\n"
+                    continue
+                if ev.get("type") == "readings":
+                    if _time.time() - last < 1.0:
+                        continue
+                    last = _time.time()
+                yield f"event: {ev.get('type', 'message')}\ndata: {_json.dumps(ev, default=str)}\n\n"
+        finally:
+            realtime.unsubscribe(q)
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/items/{item_id}/repair")
@@ -232,7 +296,7 @@ def ack_alert(alert_id: int):
 # ------------------------------------------------------------------ under the hood
 @app.get("/api/tiger")
 def tiger():
-    return services.tiger_stats()
+    return {**services.tiger_stats(), "listeners": realtime.subscriber_count()}
 
 
 # ------------------------------------------------------------------ live sensor simulator

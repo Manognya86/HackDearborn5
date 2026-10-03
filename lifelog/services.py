@@ -1,7 +1,7 @@
 """Business logic on top of Tiger Data. SQL does the heavy lifting; Python shapes results."""
 from datetime import datetime, timedelta, timezone
 
-from . import db, engine, weather
+from . import db, engine, realtime, weather
 
 LATE_GRACE = timedelta(minutes=10)
 
@@ -20,6 +20,9 @@ def list_items(user_id: int | None = None) -> list[dict]:
         ORDER BY u.is_me DESC, i.id""", {"u": user_id})
     for r in rows:
         r.update(summary(r["id"], r["model"]))
+        gap = [{"hours": r["stale_minutes"] / 60, "last_temp": r["current_temp"]}] if (r["stale_minutes"] or 0) > 20 else []
+        r["worst_case"] = engine.gap_worst_case(r["remaining"], gap, r["model"])
+        r["status"] = engine.status_of(r, r["worst_case"], r["zone"])
     return rows
 
 
@@ -56,13 +59,17 @@ def item_detail(item_id: int, raw: bool = False) -> dict | None:
     gaps = []
     for a, b in zip(timeline, timeline[1:]):
         if b["bucket"] - a["bucket"] > timedelta(minutes=20):
-            gaps.append({"from": a["bucket"] + timedelta(minutes=5), "to": b["bucket"],
+            gaps.append({"from": a["bucket"] + timedelta(minutes=5), "to": b["bucket"], "last_temp": a["avg_temp"],
                          "hours": (b["bucket"] - a["bucket"]).total_seconds() / 3600})
     if timeline and state["stale_minutes"] and state["stale_minutes"] > 20:
         gaps.append({"from": timeline[-1]["bucket"] + timedelta(minutes=5), "to": now(),
-                     "hours": state["stale_minutes"] / 60, "ongoing": True})
+                     "last_temp": timeline[-1]["avg_temp"], "hours": state["stale_minutes"] / 60, "ongoing": True})
     burners = sorted([e for e in episodes if e["burn"] > 0.0005], key=lambda e: -e["burn"])
     cur = state["current_temp"] if state["current_temp"] is not None else (m["target_min_c"] + m["target_max_c"]) / 2
+    worst = engine.gap_worst_case(state["remaining"], gaps, m)
+    whatif = engine.whatif(state["remaining"], cur, m)
+    alerts_open = db.query("SELECT * FROM alerts WHERE item_id = %s AND resolved_at IS NULL", (item_id,))
+    status = engine.status_of(state, worst, state["zone"])
     return {
         "item": item,
         "state": state,
@@ -71,11 +78,14 @@ def item_detail(item_id: int, raw: bool = False) -> dict | None:
         "episodes": episodes,
         "burners": burners[:8],
         "gaps": gaps,
-        "whatif": engine.whatif(state["remaining"], cur, m),
+        "whatif": whatif,
+        "worst_case": worst,
+        "status": status,
+        "precautions": precautions(item, state, gaps, whatif),
         "patterns": similar_patterns([r["avg_temp"] for r in timeline[-12 * 72:]]),
         "stats": item_stats(item_id, item["started_at"]),
         "zones": zone_minutes(episodes),
-        "alerts": db.query("SELECT * FROM alerts WHERE item_id = %s AND resolved_at IS NULL", (item_id,)),
+        "alerts": alerts_open,
     }
 
 
@@ -106,6 +116,12 @@ def cagg_watermark() -> datetime | None:
 def ingest(item_id: int, readings: list[dict], source: str = "sensor", auto_refresh: bool = True) -> dict:
     if not readings:
         return {"inserted": 0}
+    for r in readings:
+        if isinstance(r["ts"], str):
+            r["ts"] = datetime.fromisoformat(r["ts"].replace("Z", "+00:00"))
+    readings, rejected, flagged = engine.validate_readings(readings)
+    if not readings:
+        return {"inserted": 0, "rejected": len(rejected), "rejections": rejected[:10]}
     rows = [(r["ts"], item_id, float(r["temp_c"]), r.get("humidity"), source) for r in readings]
     with db.conn() as c, c.cursor() as cur:
         with cur.copy("COPY readings (ts, item_id, temp_c, humidity, source) FROM STDIN") as cp:
@@ -121,9 +137,12 @@ def ingest(item_id: int, readings: list[dict], source: str = "sensor", auto_refr
     if late and auto_refresh:
         db.refresh_readings(min_ts, max_ts)
         refreshed = True
-    db.execute("""INSERT INTO ingest_log (item_id, source, n, min_ts, max_ts, late, refreshed)
-                  VALUES (%s,%s,%s,%s,%s,%s,%s)""", (item_id, source, len(rows), min_ts, max_ts, late, refreshed))
-    return {"inserted": len(rows), "late": late, "refreshed": refreshed,
+    db.execute("""INSERT INTO ingest_log (item_id, source, n, min_ts, max_ts, late, refreshed, rejected, flagged)
+                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               (item_id, source, len(rows), min_ts, max_ts, late, refreshed, len(rejected), len(flagged)))
+    realtime.alerts_soon()
+    return {"inserted": len(rows), "late": late, "refreshed": refreshed, "rejected": len(rejected),
+            "flagged": len(flagged), "rejections": rejected[:10], "flags": flagged[:10],
             "min_ts": min_ts, "max_ts": max_ts, "watermark": wm}
 
 
@@ -329,3 +348,107 @@ def tiger_stats() -> dict:
         "watermark": cagg_watermark(),
         "benchmark_ms": {"continuous_aggregate": timed(False), "raw_readings": timed(True)},
     }
+
+
+# ------------------------------------------------------------------ precautions
+_forecast_cache: dict = {}
+
+
+def home_forecast() -> list[dict]:
+    """Next 48 h of hourly temperature at the user's home, cached for an hour."""
+    import time
+    me = db.one("SELECT lat, lon FROM users WHERE is_me")
+    if not me:
+        return []
+    hit = _forecast_cache.get("v")
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    try:
+        t0 = now()
+        hours = weather.hourly(me["lat"], me["lon"], t0.date(), (t0 + timedelta(days=2)).date())
+        data = [{"t": k, "temp_c": v} for k, v in sorted(hours.items()) if t0 <= k <= t0 + timedelta(hours=48)]
+    except Exception:
+        data = []
+    _forecast_cache["v"] = (time.time(), data)
+    return data
+
+
+def precautions(item: dict, state: dict, gaps: list[dict], whatif: list[dict]) -> list[dict]:
+    """Plain-language precautions: situation first (most urgent), then the label's own rules."""
+    m, out = item["model"], []
+    fridge = m["target_max_c"] <= 10
+    zone = state["zone"]
+    if zone == "Frozen":
+        out.append({"level": "critical", "text": "It has frozen. Don't use it, even after it thaws. Ask your pharmacist for a replacement."})
+    if zone == "Above labeled limit":
+        best = whatif[0] if whatif else None
+        out.append({"level": "critical", "text": f"It's too warm right now. {best['option']} as soon as you can." if best
+                    else "It's too warm right now. Move it somewhere cooler."})
+    if any(g.get("ongoing") for g in gaps):
+        out.append({"level": "warning", "text": "The sensor has stopped reporting. Check its battery and that it's within Bluetooth range."})
+    if db.one("""SELECT 1 AS x FROM outages o JOIN users u ON ST_Contains(o.area, u.geom)
+                 WHERE o.active AND u.id = %s""", (item["user_id"],)):
+        out.append({"level": "warning", "text": "Power is out. Keep the fridge door closed: a closed fridge stays cold for about 4 hours."
+                    if fridge else "Power is out. Keep it in the coolest room, away from windows."})
+    if state["remaining"] < 0.5:
+        out.append({"level": "warning", "text": "More than half its life budget is used. Check with your pharmacist before the next dose; the refill letter can help with a replacement."})
+    # forecast-driven heads-up for the next 48 h
+    fc = home_forecast()
+    if fc:
+        hot = max(fc, key=lambda f: f["temp_c"])
+        cold = min(fc, key=lambda f: f["temp_c"])
+        if hot["temp_c"] >= 27:
+            car = hot["temp_c"] + 20
+            hl = engine.hours_left(state["remaining"], car, m)
+            when = hot["t"].astimezone(timezone(timedelta(hours=-4))).strftime("%a %I %p").replace(" 0", " ") if hasattr(hot["t"], "astimezone") else ""
+            out.append({"level": "warning", "text": f"Hot weather ahead ({hot['temp_c']:.0f}°C {when}). A parked car can reach about {car:.0f}°C"
+                        + (f", which would use this medicine's remaining budget in about {hl * 60:.0f} minutes." if hl is not None and hl < 2
+                           else f", which would use this medicine's remaining budget in about {hl:.1f} hours." if hl is not None else ".")
+                        + " Don't leave it in the car."})
+        if cold["temp_c"] <= 0 and m.get("freeze_discard"):
+            out.append({"level": "warning", "text": f"Freezing weather ahead ({cold['temp_c']:.0f}°C). Don't leave it in a car or mailbox; frozen medicine must be thrown away."})
+    # the label's own rules
+    if fridge:
+        out.append({"level": "info", "text": f"Store in the fridge at {m['target_min_c']:.0f}–{m['target_max_c']:.0f}°C, in the middle shelf, away from the back wall where it can freeze."})
+    else:
+        out.append({"level": "info", "text": f"Keep at {m['target_min_c']:.0f}–{m['target_max_c']:.0f}°C. Don't refrigerate it unless the label says so." if not m.get("cold_ok", True)
+                    else f"Keep at {m['target_min_c']:.0f}–{m['target_max_c']:.0f}°C."})
+    if m.get("freeze_discard"):
+        out.append({"level": "info", "text": "Never freeze it. If it has been frozen, don't use it."})
+    for v in m.get("visual_checks", []):
+        out.append({"level": "info", "text": f"Before each use: {v[0].lower() + v[1:]}."})
+    for d in m.get("discard_rules", []):
+        out.append({"level": "info", "text": d.rstrip(".") + "."})
+    out.append({"level": "info", "text": "Carry it in an insulated case when you leave home, and keep it out of direct sunlight."})
+    return out
+
+
+# ------------------------------------------------------------------ accuracy report
+def accuracy(item_id: int) -> dict:
+    """Cross-checks the life budget four ways and shows how sensitive it is to the main assumption."""
+    d = item_detail(item_id)
+    m, started = d["item"]["model"], d["item"]["started_at"]
+    used = lambda raw, naive: (db.one("SELECT used FROM item_timeline(%s, %s, %s) ORDER BY bucket DESC LIMIT 1",
+                                      (item_id, raw, naive)) or {"used": 0.0})["used"]
+    raw_rows = db.query("SELECT ts, temp_c FROM readings WHERE item_id = %s ORDER BY ts", (item_id,))
+    readings = [(r["ts"], r["temp_c"]) for r in raw_rows]
+    methods = {
+        "aggregate_exact": 1 - used(False, False),
+        "raw_exact_sql": 1 - used(True, False),
+        "python_independent": 1 - engine.exact_budget_used(readings, m, started),
+        "aggregate_bucket_average": 1 - used(False, True),
+    }
+    sens = []
+    for h in (4, 8, 24, 72):
+        mm = {**m, "above_limit_budget_hours": h}
+        sens.append({"above_limit_budget_hours": h, "remaining": 1 - engine.exact_budget_used(readings, mm, started)})
+    log = db.one("""SELECT coalesce(sum(n), 0) AS accepted, coalesce(sum(rejected), 0) AS rejected,
+                           coalesce(sum(flagged), 0) AS flagged, count(*) FILTER (WHERE late) AS late_batches
+                    FROM ingest_log WHERE item_id = %s""", (item_id,))
+    return {"item": d["item"]["nickname"], "methods": methods,
+            "max_disagreement": max(methods["aggregate_exact"], methods["raw_exact_sql"], methods["python_independent"])
+            - min(methods["aggregate_exact"], methods["raw_exact_sql"], methods["python_independent"]),
+            "averaging_error": methods["aggregate_bucket_average"] - methods["aggregate_exact"],
+            "sensitivity": sens, "assumption_on_label": not m.get("above_limit_is_assumption", True),
+            "gaps": d["gaps"], "worst_case": d["worst_case"], "remaining": d["state"]["remaining"],
+            "readings": len(readings), "ingest": log}

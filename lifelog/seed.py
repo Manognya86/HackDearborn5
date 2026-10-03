@@ -329,7 +329,18 @@ def compress_history() -> int:
 
 
 def apply_schema() -> None:
+    sql = config.ROOT / "sql"
     with db.conn(autocommit=True) as c:
-        c.execute((config.ROOT / "sql" / "schema.sql").read_text(encoding="utf-8"))
-        c.execute((config.ROOT / "sql" / "functions.sql").read_text(encoding="utf-8"))
+        # migrate: older readings_5m without the per-reading burn rate is rebuilt
+        stale = c.execute("""SELECT 1 FROM information_schema.views v WHERE v.table_name = 'readings_5m'
+                             AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                                             WHERE table_name = 'readings_5m' AND column_name = 'avg_rate')""").fetchone()
+        if stale:
+            c.execute("DROP MATERIALIZED VIEW readings_5m CASCADE")
+        c.execute((sql / "schema.sql").read_text(encoding="utf-8"))
+        c.execute((sql / "functions.sql").read_text(encoding="utf-8"))
+        c.execute((sql / "aggregates.sql").read_text(encoding="utf-8"))
+        c.execute((sql / "realtime.sql").read_text(encoding="utf-8"))
+        if stale:
+            c.execute("CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
     add_policy()
