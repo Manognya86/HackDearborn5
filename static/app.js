@@ -669,7 +669,40 @@ async function loadCompare() {
     <div class="stat"><div class="v">${pct(c.aggregate.remaining, 1)}</div><div class="k">what the dashboard shows</div></div>
     <div class="stat"><div class="v">${pct(c.raw_truth.remaining, 1)}</div><div class="k">recomputed from raw data</div></div>
     <div class="stat"><div class="v">${Math.abs(diff) < 0.001 ? "in sync" : "+" + pct(diff, 1)}</div><div class="k">overstatement</div></div></div>
-    ${Math.abs(diff) >= 0.001 ? `<div class="banner bad">Late readings are hidden behind the rollup's watermark: the dashboard overstates the budget by ${pct(diff, 1)}.</div>` : `<div class="banner ok">The dashboard matches the raw data.</div>`}`;
+    ${Math.abs(diff) >= 0.001 ? `<div class="banner bad">Late readings are hidden behind the rollup's watermark: the dashboard overstates the budget by ${pct(diff, 1)}.</div>` : `<div class="banner ok">The dashboard matches the raw data.</div>`}
+    ${watermarkStrip(c)}`;
+}
+// Where late batches landed relative to the continuous aggregate's materialization watermark.
+function watermarkStrip(c) {
+  if (!c.watermark) return "";
+  const now = Date.now(), wm = new Date(c.watermark).getTime();
+  const late = (c.log || []).filter((l) => l.late);
+  const t0 = Math.min(now - 8 * 3600e3, ...late.map((l) => new Date(l.min_ts).getTime()));
+  const frac = (t) => Math.max(0, Math.min(1, (t - t0) / (now - t0)));
+  const x = (t) => `${(frac(t) * 100).toFixed(2)}%`;
+  const hm = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const band = (a, b, cls, title) => (b <= a ? "" :
+    `<div class="wm-band ${cls}" style="left:${x(a)};width:calc(${x(b)} - ${x(a)} + 3px)" title="${title}"></div>`);
+  // the part of a late batch behind the watermark is hidden until refreshed; the part after it is served live
+  const bands = late.map((l) => {
+    const a = new Date(l.min_ts).getTime(), b = new Date(l.max_ts).getTime();
+    return band(a, Math.min(b, wm), l.refreshed ? "ok" : "bad",
+                `${hm(a)}–${hm(Math.min(b, wm))}: ${l.refreshed ? "window refreshed" : "behind the watermark, hidden until refreshed"}`)
+         + band(Math.max(a, wm), b, "live", `${hm(Math.max(a, wm))}–${hm(b)}: after the watermark, computed live`);
+  }).join("");
+  const open = late.some((l) => !l.refreshed);
+  const edge = frac(wm) > 0.7 ? "end" : frac(wm) < 0.3 ? "start" : "mid";
+  return `<div class="wm">
+    <div class="wm-track">
+      <div class="wm-rt" style="left:${x(wm)}"></div>${bands}
+      <div class="wm-line" style="left:${x(wm)}"><span class="${edge}">watermark ${hm(wm)}</span></div>
+    </div>
+    <div class="wm-axis"><span>${hm(t0)}</span><span>now</span></div>
+    <div class="wm-legend small muted">
+      <span><i class="wm-key mat"></i>materialized rollup (served as stored)</span>
+      <span><i class="wm-key rt"></i>real-time: computed from raw readings</span>
+      ${late.length ? `<span><i class="wm-key ${open ? "bad" : "ok"}"></i>late readings ${open ? "behind the watermark: not in the rollup yet" : "behind the watermark: windows refreshed"}</span>` : ""}
+    </div></div>`;
 }
 loaders.demo = () => { loadCompare(); simAction("status"); };
 
