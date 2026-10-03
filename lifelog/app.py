@@ -1,0 +1,227 @@
+"""LIFELOG Home API. Run: .venv/Scripts/uvicorn lifelog.app:app --reload"""
+import json
+from datetime import datetime, timedelta
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from . import config, db, engine, gem, seed, services
+from .models import StabilityModel
+
+app = FastAPI(title="LIFELOG Home")
+app.mount("/static", StaticFiles(directory=config.ROOT / "static"), name="static")
+
+
+@app.exception_handler(gem.GeminiUnavailable)
+async def _no_gemini(_: Request, exc: gem.GeminiUnavailable):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.get("/")
+def index():
+    return FileResponse(config.ROOT / "static" / "index.html")
+
+
+def _item_or_404(item_id: int, raw: bool = False) -> dict:
+    d = services.item_detail(item_id, raw)
+    if not d:
+        raise HTTPException(404, "item not found")
+    return d
+
+
+def _llm_state(d: dict) -> dict:
+    """Compact state for Gemini: no full timeline."""
+    return {"medicine": d["item"]["nickname"], "model": d["item"]["model"], "state": d["state"],
+            "top_budget_consumers": d["burners"], "data_gaps": d["gaps"], "what_if": d["whatif"],
+            "similar_patterns": d["patterns"]}
+
+
+# ------------------------------------------------------------------ health
+@app.get("/api/health")
+def health():
+    out = {"gemini": bool(config.GEMINI_API_KEY), "model": config.GEMINI_MODEL, "database": False}
+    try:
+        out["extensions"] = {r["extname"]: r["extversion"] for r in
+                             db.query("SELECT extname, extversion FROM pg_extension")}
+        out["database"] = True
+        out["watermark"] = services.cagg_watermark()
+    except Exception as e:  # noqa: BLE001
+        out["db_error"] = str(e)
+    return out
+
+
+# ------------------------------------------------------------------ items
+@app.get("/api/items")
+def items(mine: bool = True):
+    me = db.one("SELECT id FROM users WHERE is_me")
+    return services.list_items(me["id"] if (mine and me) else None)
+
+
+@app.get("/api/items/{item_id}")
+def item(item_id: int, raw: bool = False):
+    return _item_or_404(item_id, raw)
+
+
+@app.get("/api/items/{item_id}/compare")
+def compare(item_id: int):
+    """Late-data demo: budget as served by the continuous aggregate vs recomputed from raw readings."""
+    d = _item_or_404(item_id)
+    m = d["item"]["model"]
+    return {"aggregate": services.summary(item_id, m), "raw_truth": services.summary(item_id, m, raw=True),
+            "watermark": services.cagg_watermark(),
+            "log": db.query("SELECT * FROM ingest_log WHERE item_id = %s ORDER BY id DESC LIMIT 5", (item_id,))}
+
+
+@app.post("/api/items/{item_id}/repair")
+def repair(item_id: int):
+    return services.repair_late(item_id)
+
+
+@app.post("/api/items/{item_id}/advice")
+def advice(item_id: int):
+    return gem.advise(_llm_state(_item_or_404(item_id)))
+
+
+@app.post("/api/items/{item_id}/visual")
+async def visual(item_id: int, photo: UploadFile = File(...)):
+    d = _item_or_404(item_id)
+    return gem.visual_check(await photo.read(), photo.content_type or "image/jpeg", d["item"]["model"])
+
+
+@app.post("/api/items/{item_id}/letter")
+def letter(item_id: int):
+    d = _item_or_404(item_id)
+    outage = db.one("""SELECT o.id, o.name, o.started_at, o.est_restore_at FROM outages o
+                       JOIN users u ON ST_Contains(o.area, u.geom) JOIN items i ON i.user_id = u.id
+                       WHERE i.id = %s ORDER BY o.started_at DESC LIMIT 1""", (item_id,))
+    m = d["item"]["model"]
+    ctx = {"product": d["item"]["product_name"], "nickname": d["item"]["nickname"],
+           "remaining_budget_pct": round(d["state"]["remaining"] * 100, 1),
+           "exposure_timeline": [e for e in d["episodes"] if e["zone"] != "Labeled storage"],
+           "label_rules": {k: m.get(k) for k in ("target_quote", "bands", "freeze_quote", "above_limit_quote",
+                                                  "above_limit_is_assumption")},
+           "outage": outage, "data_gaps": d["gaps"], "generated_at": services.now()}
+    return {"letter": gem.refill_letter(ctx)}
+
+
+class TripIn(BaseModel):
+    itinerary: str
+
+
+@app.post("/api/items/{item_id}/trip")
+def trip(item_id: int, body: TripIn):
+    _item_or_404(item_id)
+    plan = gem.parse_trip(body.itinerary, services.now())
+    sim = services.simulate_trip(item_id, plan["legs"])
+    sim["advice"] = gem.trip_advice(sim)
+    return sim
+
+
+# ------------------------------------------------------------------ products / labels
+@app.post("/api/products/extract")
+async def extract(label: UploadFile = File(...)):
+    data = await label.read()
+    return gem.extract_label(data, label.content_type or "application/pdf")
+
+
+class NewItem(BaseModel):
+    model: StabilityModel
+    nickname: str
+
+
+@app.post("/api/products")
+def create_product(body: NewItem):
+    m = body.model.model_dump()
+    pid = db.one("INSERT INTO products (name, model, source) VALUES (%s, %s, 'gemini') RETURNING id",
+                 (m["product_name"], json.dumps(m)))["id"]
+    me = db.one("SELECT id FROM users WHERE is_me")
+    iid = db.one("INSERT INTO items (user_id, product_id, nickname, started_at) VALUES (%s,%s,%s, now() - interval '1 hour') RETURNING id",
+                 (me["id"], pid, body.nickname))["id"]
+    return {"product_id": pid, "item_id": iid}
+
+
+# ------------------------------------------------------------------ ingest & voice
+class Reading(BaseModel):
+    ts: datetime
+    temp_c: float
+    humidity: float | None = None
+
+
+class IngestIn(BaseModel):
+    item_id: int
+    readings: list[Reading]
+    source: str = "sensor"
+    auto_refresh: bool = True
+
+
+@app.post("/api/ingest")
+def ingest(body: IngestIn):
+    return services.ingest(body.item_id, [r.model_dump() for r in body.readings], body.source, body.auto_refresh)
+
+
+@app.post("/api/voice")
+async def voice(item_id: int = Form(...), text: str | None = Form(None), audio: UploadFile | None = File(None)):
+    d = _item_or_404(item_id)
+    mine = [{"id": i["id"], "nickname": i["nickname"]} for i in items()]
+    report = gem.parse_voice(services.now(), mine,
+                             audio=await audio.read() if audio else None,
+                             mime_type=(audio.content_type if audio else "audio/wav") or "audio/wav", text=text)
+    pts = []
+    t_now = services.now()
+    for ev in report["events"]:
+        start = t_now - timedelta(minutes=ev["minutes_ago_start"])
+        end = min(t_now, start + timedelta(minutes=max(1, ev["duration_minutes"])))
+        pts += [{"ts": t, "temp_c": ev["estimated_temp_c"]} for t in engine.daterange(start, end, timedelta(minutes=1))]
+    if pts:
+        db.execute("DELETE FROM readings WHERE item_id = %s AND ts >= %s AND ts <= %s",
+                   (item_id, min(p["ts"] for p in pts), max(p["ts"] for p in pts)))
+        res = services.ingest(item_id, pts, source="voice", auto_refresh=True)
+        db.refresh_readings(min(p["ts"] for p in pts) - timedelta(minutes=5), t_now)
+    else:
+        res = {"inserted": 0}
+    return {"report": report, "ingest": res, "item": d["item"]["nickname"]}
+
+
+# ------------------------------------------------------------------ outage rescue
+@app.get("/api/rescue")
+def rescue():
+    return services.rescue()
+
+
+@app.post("/api/rescue/plan")
+def rescue_plan():
+    r = services.rescue()
+    at_risk = [p for p in r["people"] if p["at_risk"]] or r["people"][:5]
+    outage = r["outages"]["features"][0]["properties"] if r["outages"]["features"] else {}
+    return {"plan": gem.rescue_plan(at_risk[:10], outage)}
+
+
+# ------------------------------------------------------------------ porch heat index
+@app.get("/api/porch")
+def porch():
+    return services.porch_stats()
+
+
+@app.post("/api/porch/brief")
+def porch_brief():
+    return {"brief": gem.porch_brief(services.porch_stats())}
+
+
+# ------------------------------------------------------------------ demo controls
+@app.post("/api/demo/{scenario}")
+def demo(scenario: str, auto_refresh: bool = True):
+    if scenario == "reset":
+        seed.apply_schema()
+        return seed.run(with_weather=True)
+    if scenario == "hot_car":
+        return seed.scenario_hot_car(seed.me_item("EpiPen"))
+    if scenario == "late_upload":
+        iid = seed.me_item("Insulin")
+        return {"item_id": iid, **services.ingest(iid, seed.late_upload_points(iid), "sensor", auto_refresh)}
+    if scenario == "storm":
+        return seed.scenario_storm()
+    if scenario == "clear_storm":
+        return seed.scenario_clear_storm()
+    raise HTTPException(404, "unknown scenario")
