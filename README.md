@@ -115,7 +115,20 @@ cp .env.example .env        # fill GEMINI_API_KEY and DATABASE_URL
 Open http://localhost:8000.
 
 ### Database options
-- **Tiger Cloud (for judging):** `tiger auth login`, `tiger service create --name lifelog`, then `tiger db uri --with-password` → `DATABASE_URL`. Needs the `timescaledb`, `vector` and `postgis` extensions (`check_setup.py` lists what's available).
+- **Tiger Cloud (for judging):** install the [Tiger CLI](https://github.com/timescale/tiger-cli)
+  (Windows: `irm https://cli.tigerdata.com/install.ps1 | iex`; macOS/Linux: `curl -fsSL https://cli.tigerdata.com | sh`), then:
+  ```bash
+  tiger auth login
+  tiger service create --name lifelog          # paid plan / trial: 0.5 CPU / 2 GB + time-series add-on
+  tiger db uri lifelog --with-password         # direct URI with sslmode=require -> DATABASE_URL in .env
+  tiger db ping lifelog
+  ```
+  Use a **standard (paid or trial) service**, not the free shared tier: on the Free plan `tiger service create`
+  makes a shared-CPU service with fewer features that turns read-only at its storage limit.
+  If the service was created in the web console, the CLI doesn't know its password yet: run
+  `tiger db save-password <service>` (or `tiger service update-password <service>` to reset it) before `tiger db uri --with-password`.
+  Use the **direct** URI, not `--pooled`: `LISTEN/NOTIFY` needs a session connection.
+  Needs the `timescaledb`, `vector` and `postgis` extensions (`check_setup.py` lists what's available).
 - **Local:** `docker run -d --name lifelog-db -p 55432:5432 -e POSTGRES_PASSWORD=lifelog timescale/timescaledb-ha:pg17`, then `DATABASE_URL=postgresql://postgres:lifelog@localhost:55432/postgres`.
 
 ### Phones and other devices
