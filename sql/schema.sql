@@ -56,19 +56,6 @@ CREATE TABLE IF NOT EXISTS readings (
 SELECT create_hypertable('readings', by_range('ts', INTERVAL '1 day'), if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS readings_item_ts ON readings (item_id, ts DESC);
 
--- 5-minute rollup. Real-time mode so fresh data shows up immediately; anything older than
--- the materialization watermark only changes after a refresh (the late-data problem).
-CREATE MATERIALIZED VIEW IF NOT EXISTS readings_5m
-WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
-SELECT time_bucket('5 minutes', ts) AS bucket,
-       item_id,
-       avg(temp_c) AS avg_temp,
-       min(temp_c) AS min_temp,
-       max(temp_c) AS max_temp,
-       count(*)    AS n
-FROM readings
-GROUP BY bucket, item_id
-WITH NO DATA;
 
 CREATE TABLE IF NOT EXISTS ingest_log (
     id          SERIAL PRIMARY KEY,
@@ -81,6 +68,8 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     late        BOOLEAN NOT NULL,
     refreshed   BOOLEAN NOT NULL
 );
+ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS rejected INT NOT NULL DEFAULT 0;
+ALTER TABLE ingest_log ADD COLUMN IF NOT EXISTS flagged INT NOT NULL DEFAULT 0;
 
 -- ---------------------------------------------------------------- exposure pattern library
 CREATE TABLE IF NOT EXISTS pattern_library (
