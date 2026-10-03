@@ -27,9 +27,25 @@ model (Gemini), tracks every exposure as time-series in Tiger Data, and tells yo
 | Under the hood page | Hypertable sizes, compression ratio, job runs, aggregate vs raw timing | |
 | Live sensors | Streams a reading per medicine every 5 s into the real-time aggregate | |
 | Ask LIFELOG | Tools query Tiger | Function calling over 5 tools, shows which ones it called |
+| Real time | `LISTEN/NOTIFY` triggers on `readings` and `alerts` → Server-Sent Events; alerts re-checked within ~2 s of new data | |
+| Accuracy report | Exact per-reading burn inside the continuous aggregate (joins `items`/`products`), cross-checked against raw SQL and an independent Python recomputation; sensitivity to the 8 h assumption | |
+| Data quality | Ingest rejects impossible values and duplicates, flags implausible jumps, logs counts | |
+| Precautions | Care checklist from the label + situation (too warm, outage, sensor silent) + 48 h heat/freeze forecast | |
+| Exports | CSV exposure log per medicine; print-friendly page | |
 
 The life-budget math lives in **both** SQL (`sql/functions.sql`) and Python (`lifelog/engine.py`);
 `tests/test_parity.py` proves they agree.
+
+### Accuracy
+- **Per-reading burn.** The continuous aggregate stores the mean *per-reading* burn rate for each 5-minute bucket.
+  Computing the burn from the bucket's average temperature is wrong whenever readings straddle a label limit or spike
+  (a 1-minute 25°C spike in a 3°C fridge averages 7.4°C, "in range", but still burns budget).
+- **Three-way cross-check.** Live aggregate = SQL recomputation from raw readings = independent Python recomputation
+  (shown per medicine under "How accurate is this?").
+- **Uncertainty from gaps.** A silent sensor produces a range: budget if nothing happened, and a worst case at room
+  temperature. A sensor silent for an hour or more turns the status to "Check on it" rather than "Safe".
+- **Sensitivity.** The 8-hour above-limit default matters a lot for labels that don't state it (the hot-car EpiPen is
+  0% at 4 h, 43% at 8 h, 81% at 24 h), so the UI shows this table instead of hiding it.
 
 ### Model (and its honest assumptions)
 - Inside the labeled storage range: no budget used.
@@ -59,6 +75,13 @@ Open http://localhost:8000.
 ### Database options
 - **Tiger Cloud (for judging):** `tiger auth login`, `tiger service create --name lifelog`, then `tiger db uri --with-password` → `DATABASE_URL`. Needs the `timescaledb`, `vector` and `postgis` extensions (`check_setup.py` lists what's available).
 - **Local:** `docker run -d --name lifelog-db -p 55432:5432 -e POSTGRES_PASSWORD=lifelog timescale/timescaledb-ha:pg17`, then `DATABASE_URL=postgresql://postgres:lifelog@localhost:55432/postgres`.
+
+### Phones and other devices
+Responsive layout: sidebar on desktop, bottom tab bar on phones, safe-area insets for notched phones, light and dark
+themes, installable to the home screen (web app manifest), print stylesheet for a pharmacist summary.
+
+### Real time on Tiger Cloud
+`LISTEN/NOTIFY` needs a direct (not transaction-pooled) connection: use the default `tiger db uri`, not `--pooled`.
 
 ### Tests
 ```bash
