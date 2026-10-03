@@ -57,8 +57,41 @@ The life-budget math lives in **both** SQL (`sql/functions.sql`) and Python (`li
 - Mean Kinetic Temperature uses ΔH = 83.144 kJ/mol (USP <1079>) over 5-minute buckets.
 - The live simulator speeds up outage warming so the demo moves within minutes.
 
-Demo product models are marked "(demo)" and are **not** copied from real labels. Upload a real label to get real quotes.
 This is a decision-support prototype, not medical advice.
+
+## Medicines and where their rules come from
+Every seeded product quotes Section 16 ("How Supplied / Storage and Handling") of its FDA prescribing information,
+retrieved through [openFDA](https://open.fda.gov/apis/drug/label/). Each links to its DailyMed page in the app.
+
+| Medicine | Labeled storage | Allowance outside it (verbatim on label) |
+|---|---|---|
+| Lantus SoloStar (insulin glargine) | 2–8°C | up to 30°C, 28 days |
+| NovoLog FlexPen (insulin aspart) | 2–8°C | up to 30°C, 28 days |
+| Tresiba FlexTouch (insulin degludec) | 2–8°C | up to 30°C, 56 days |
+| Mounjaro single-dose pen (tirzepatide) | 2–8°C | up to 30°C, 21 days total |
+| Trulicity pen (dulaglutide) | 2–8°C | up to 30°C, 14 days total |
+| Victoza pen, in use (liraglutide) | 2–8°C | 15–30°C, 30 days |
+| Enbrel SureClick (etanercept) | 2–8°C | 20–25°C, one period of 30 days |
+| EpiPen (epinephrine) | 20–25°C | excursions 15–30°C (no time limit given) |
+| Xalatan, opened (latanoprost) | 2–8°C | up to 25°C for 6 weeks; up to 40°C for 8 days |
+
+Where a label is silent (time tolerated above its highest limit, EpiPen excursion length, temperatures between the
+fridge range and a stated room range) LIFELOG says so in the app and uses a flagged assumption.
+Not seeded: injectable Ozempic and Humira, because openFDA only returned repackager labels without the storage text;
+use "Add it by name" or a label photo.
+
+### Add any medicine by name
+`POST /api/products/lookup {"name": "Trulicity"}`:
+1. **openFDA first** — the manufacturer's label, storage section verbatim (repackager labels without storage text are skipped).
+2. **Gemini fallback** — Google Search grounding + URL Context find the official prescribing information; the app shows
+   every source URL and the exact label text it read, so the person can confirm it matches their medicine
+   (e.g. "Ozempic" on openFDA is now also an oral tablet).
+3. Gemini structured output turns the text into the life-budget model.
+
+### Languages
+Gemini answers (verdicts, photo checks, Ask LIFELOG, trip advice, outage texts) can be in English, Arabic, Spanish or
+Bengali — Dearborn has large Arabic-speaking and Bengali-speaking communities. Label quotes, numbers and medicine
+names stay as written; refill letters stay in English for the pharmacist with a summary in the chosen language.
 
 ## Run it
 
@@ -79,6 +112,17 @@ Open http://localhost:8000.
 ### Phones and other devices
 Responsive layout: sidebar on desktop, bottom tab bar on phones, safe-area insets for notched phones, light and dark
 themes, installable to the home screen (web app manifest), print stylesheet for a pharmacist summary.
+
+### Checked against Tiger Data's docs
+- **Columnstore (hypercore)** is the current compression API: `enable_columnstore` + `segmentby`/`orderby`,
+  `add_columnstore_policy`, `convert_to_columnstore`. `add_compression_policy` is deprecated since TimescaleDB 2.18;
+  LIFELOG uses the new API and falls back to the old one on older versions.
+- **Continuous aggregates with joins**: one hypertable with several regular tables is supported from TimescaleDB 2.16
+  (INNER/LEFT/LATERAL joins, equality conditions). Changes to the joined regular tables (`items`, `products`) are not
+  tracked — a product's rules are written once; if they were edited, refresh that item's readings.
+- **Real-time aggregation** has been off by default since 2.13; `readings_5m` turns it on explicitly.
+- **Extensions on Tiger Cloud**: `timescaledb_toolkit` is enabled by default; `postgis` and `vector` (pgvector) are
+  available and enabled by `sql/schema.sql`.
 
 ### Real time on Tiger Cloud
 `LISTEN/NOTIFY` needs a direct (not transaction-pooled) connection: use the default `tiger db uri`, not `--pooled`.
