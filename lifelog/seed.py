@@ -1,5 +1,7 @@
-"""Demo data. Product models are clearly marked '(demo)': they resemble typical label rules but are NOT
-copied from any real label -- upload a real label to get a Gemini-extracted model with verbatim quotes."""
+"""Seed data. Product storage rules are taken from each medicine's FDA prescribing information
+(Section 16, "How Supplied / Storage and Handling"), retrieved through openFDA's drug-label API.
+Quotes are verbatim; where a label is silent LIFELOG says so and flags its own assumption.
+Upload a label or use "add by name" for any other medicine."""
 import json
 import math
 import random
@@ -8,44 +10,118 @@ from datetime import date, datetime, timedelta, timezone
 from . import config, db, engine, weather
 
 rng = random.Random(7)
+ASSUME = "Not stated on label (LIFELOG conservative default: 8 h above the highest labeled limit, doubling per 10°C)"
 
 
 def _band(label, lo, hi, hours, quote):
     return {"label": label, "min_c": lo, "max_c": hi, "budget_hours": hours, "quote": quote}
 
 
-def _model(name, form, tmin, tmax, tq, bands, cold_ok=True, freeze=True, above=8.0, visual=(), discard=()):
+def _model(name, form, tmin, tmax, tq, bands, *, freeze_quote, cold_ok=True, freeze=True, above=8.0,
+           above_quote=ASSUME, above_assumed=True, visual=(), discard=(), notes=""):
     return {
         "product_name": name, "form": form,
         "target_min_c": tmin, "target_max_c": tmax, "target_quote": tq,
-        "freeze_discard": freeze, "freeze_c": 0.0,
-        "freeze_quote": "(demo) Do not freeze. Do not use if it has been frozen." if freeze else "Not stated on label",
+        "freeze_discard": freeze, "freeze_c": 0.0, "freeze_quote": freeze_quote,
         "cold_ok": cold_ok, "bands": bands,
-        "above_limit_budget_hours": above, "above_limit_is_assumption": True,
-        "above_limit_quote": "Not stated on label (LIFELOG conservative default: 8 h above the highest labeled limit, doubling per 10C)",
-        "visual_checks": list(visual), "discard_rules": list(discard), "notes": "Demo model for hackathon use.",
+        "above_limit_budget_hours": above, "above_limit_is_assumption": above_assumed, "above_limit_quote": above_quote,
+        "visual_checks": list(visual), "discard_rules": list(discard), "notes": notes,
     }
 
 
+def _src(brand, set_id, effective):
+    return {"label": f"{brand} prescribing information, FDA label version {effective[:4]}-{effective[4:6]}-{effective[6:]}",
+            "url": f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={set_id}"}
+
+
+ROOM = "Room-temp allowance"
 PRODUCTS = {
-    "glp1": _model("GLP-1 pen (demo)", "pen", 2, 8, "(demo) Store unused pens in the refrigerator between 2C and 8C.",
-                   [_band("Room-temp allowance", 8, 30, 56 * 24,
-                          "(demo) After first use the pen can be stored at room temperature up to 30C for 56 days.")],
-                   visual=["Liquid should be clear and colorless"], discard=["Discard 56 days after first use"]),
-    "insulin": _model("Insulin vial (demo)", "vial", 2, 8, "(demo) Unopened vials: refrigerate at 2C to 8C.",
-                      [_band("Room-temp allowance", 8, 30, 28 * 24,
-                             "(demo) May be kept unrefrigerated below 30C for up to 28 days.")],
-                      visual=["Do not use if cloudy, thickened or contains particles"],
-                      discard=["Discard 28 days after opening"]),
-    "epi": _model("Epinephrine auto-injector (demo)", "auto-injector", 20, 25,
-                  "(demo) Store at 20C to 25C; excursions permitted to 15C-30C.",
-                  [_band("Cool excursion", 15, 20, 90 * 24, "(demo) Excursions permitted to 15C-30C."),
-                   _band("Warm excursion", 25, 30, 90 * 24, "(demo) Excursions permitted to 15C-30C.")],
-                  cold_ok=False, visual=["Solution should be clear; do not use if discolored (pink/brown)"]),
-    "biologic": _model("Biologic pen (demo)", "pen", 2, 8, "(demo) Refrigerate at 2C to 8C in the original carton.",
-                       [_band("Room-temp allowance", 8, 25, 14 * 24,
-                              "(demo) May be stored at room temperature up to 25C for a single period of up to 14 days.")]),
+    "insulin": _model(
+        "Lantus SoloStar pen (insulin glargine)", "prefilled pen", 2, 8,
+        "Store unused LANTUS in a refrigerator between 36°F and 46°F (2°C and 8°C).",
+        [_band(ROOM, 8, 30, 28 * 24, "Storage table, 3 mL SoloStar prefilled pen: Room Temperature (up to 86°F [30°C]): 28 days.")],
+        freeze_quote="Do not freeze. Discard LANTUS if it has been frozen.",
+        discard=["Protect LANTUS from direct heat and light.", "In-use pens: room temperature only (do not refrigerate), 28 days."]),
+    "novolog": _model(
+        "NovoLog FlexPen (insulin aspart)", "prefilled pen", 2, 8,
+        "Store unused NOVOLOG in a refrigerator between 2°C to 8°C (36°F to 46°F).",
+        [_band(ROOM, 8, 30, 28 * 24, "Storage table, 3 mL FlexPen: Room Temperature (up to 30°C [86°F]): 28 days.")],
+        freeze_quote="Do not freeze NOVOLOG and do not use NOVOLOG if it has been frozen.",
+        discard=["Do not expose NOVOLOG to excessive heat or light.",
+                 "In an insulin pump: change it after exposure to temperatures that exceed 37°C (98.6°F)."]),
+    "tresiba": _model(
+        "Tresiba FlexTouch (insulin degludec)", "prefilled pen", 2, 8,
+        "Store unused TRESIBA in a refrigerator (36°F to 46°F [2°C to 8°C]).",
+        [_band(ROOM, 8, 30, 56 * 24, "Storage table, FlexTouch: Room Temperature (up to 86°F [30°C]): 56 days (8 weeks).")],
+        freeze_quote="Do not freeze. Do not use TRESIBA if it has been frozen.",
+        discard=["Do not store in the freezer or directly adjacent to the refrigerator cooling element."]),
+    "glp1": _model(
+        "Mounjaro single-dose pen (tirzepatide)", "single-dose pen", 2, 8,
+        "Store MOUNJARO single-dose pen and single-dose vial in a refrigerator at 2°C to 8°C (36°F to 46°F).",
+        [_band(ROOM, 8, 30, 21 * 24, "If needed, each single-dose pen or single-dose vial can be stored unrefrigerated at "
+                                    "temperatures not to exceed 30°C (86°F) for up to a total of 21 days.")],
+        freeze_quote="Do not freeze MOUNJARO. Do not use MOUNJARO if frozen.",
+        discard=["Discard the single-dose pen or single-dose vial after a total of 21 days at room temperature.",
+                 "Protect MOUNJARO from heat and light."]),
+    "trulicity": _model(
+        "Trulicity pen (dulaglutide)", "single-dose pen", 2, 8,
+        "Store TRULICITY in the refrigerator at 36°F to 46°F (2°C to 8°C).",
+        [_band(ROOM, 8, 30, 14 * 24, "If needed, each single-dose pen can be kept at room temperature, not to exceed "
+                                    "86°F (30°C) for a total of 14 days.")],
+        freeze_quote="Do not freeze TRULICITY. Do not use TRULICITY if it has been frozen.",
+        discard=["Protect TRULICITY from light."]),
+    "victoza": _model(
+        "Victoza pen, in use (liraglutide)", "multi-dose pen", 2, 8,
+        "Prior to first use, VICTOZA should be stored in a refrigerator between 36°F to 46°F (2°C to 8°C).",
+        [_band(ROOM, 8, 30, 30 * 24, "After first use of the VICTOZA pen, the pen can be stored for 30 days at controlled "
+                                    "room temperature 59°F to 86°F (15°C to 30°C) or in a refrigerator 36°F to 46°F (2°C to 8°C).")],
+        freeze_quote="Do not freeze VICTOZA and do not use VICTOZA if it has been frozen.",
+        discard=["Protect VICTOZA from excessive heat and sunlight.",
+                 "The 30 days after first use apply even in the fridge; LIFELOG's budget only tracks heat."],
+        notes="The label gives 15–30°C; LIFELOG applies the same allowance to 8–15°C."),
+    "biologic": _model(
+        "Enbrel SureClick (etanercept)", "autoinjector", 2, 8,
+        "Enbrel should be refrigerated at 36°F to 46°F (2°C to 8°C) in the original carton to protect from light or physical damage.",
+        [_band(ROOM, 8, 25, 30 * 24, "storage of individual single-dose prefilled syringes, SureClick autoinjectors, single-dose vials, "
+                                    "or Enbrel Mini cartridges at room temperature at 68°F to 77°F (20°C to 25°C) for a maximum "
+                                    "single period of 30 days is permissible, with protection from light and sources of heat.")],
+        freeze_quote="DO NOT FREEZE.", above_quote="Do not store Enbrel in extreme heat or cold. (No time limit given: "
+                                                    "LIFELOG assumes 8 h above 25°C, doubling per 10°C.)",
+        discard=["Once stored at room temperature, it should not be placed back into the refrigerator.",
+                 "If not used within 30 days at room temperature, discard it.", "DO NOT SHAKE."],
+        notes="The label gives 20–25°C; LIFELOG applies the same allowance to 8–20°C."),
+    "epi": _model(
+        "EpiPen auto-injector (epinephrine)", "auto-injector", 20, 25,
+        "Store at 20°C to 25°C (68°F to 77°F); excursions permitted to 15°C to 30°C (59°F to 86°F) [See USP Controlled Room Temperature].",
+        [_band("Cool excursion", 15, 20, 90 * 24, "excursions permitted to 15°C to 30°C (59°F to 86°F)"),
+         _band("Warm excursion", 25, 30, 90 * 24, "excursions permitted to 15°C to 30°C (59°F to 86°F)")],
+        freeze_quote="Not stated on label (it says: Do not refrigerate.)", freeze=False, cold_ok=False,
+        visual=["Before using, check to make sure the solution in the auto-injector is clear and colorless.",
+                "Replace the auto-injector if the solution is discolored (pinkish or brown color), cloudy, or contains particles."],
+        discard=["Protect from light: store in the carrier tube provided.", "Do not refrigerate."],
+        notes="The label permits excursions without a time limit; LIFELOG assumes 90 days of cumulative excursion."),
+    "xalatan": _model(
+        "Xalatan eye drops, opened (latanoprost)", "eye drop bottle", 2, 8,
+        "Store unopened bottle(s) under refrigeration at 2°C to 8°C (36°F to 46°F).",
+        [_band(ROOM, 8, 25, 6 * 7 * 24, "Once a bottle is opened for use, it may be stored at room temperature up to 25°C (77°F) for 6 weeks."),
+         _band("Shipping allowance", 25, 40, 8 * 24, "During shipment to the patient, the bottle may be maintained at temperatures "
+                                                    "up to 40°C (104°F) for a period not exceeding 8 days.")],
+        freeze_quote="Not stated on label", freeze=False, discard=["Protect from light."]),
 }
+SOURCES = {
+    "insulin": _src("LANTUS", "d5e07a0c-7e14-4756-9152-9fea485d654a", "20250602"),
+    "novolog": _src("NOVOLOG", "3a1e73a2-3009-40d0-876c-b4cb2be56fc5", "20230228"),
+    "tresiba": _src("TRESIBA", "456c5e87-3dfd-46fa-8ac0-c6128d4c97c6", "20220701"),
+    "glp1": _src("MOUNJARO", "d2d7da5d-ad07-4228-955f-cf7e355c8cc0", "20260827"),
+    "trulicity": _src("TRULICITY", "463050bd-2b1c-40f5-b3c3-0a04bb433309", "20260616"),
+    "victoza": _src("VICTOZA", "5a9ef4ea-c76a-4d34-a604-27c5b505f5a4", "20251014"),
+    "biologic": _src("ENBREL", "a002b40c-097d-47a5-957f-7a7b1807af7f", "20260511"),
+    "epi": _src("EpiPen", "311af6d9-20c0-4b87-b236-4185bfa49988", "20230829"),
+    "xalatan": _src("XALATAN", "a98595b3-9f47-48e0-b18d-550a2095f264", "20230515"),
+}
+SHORT = {"insulin": "Lantus pen", "novolog": "NovoLog FlexPen", "tresiba": "Tresiba pen", "glp1": "Mounjaro pen",
+         "trulicity": "Trulicity pen", "victoza": "Victoza pen", "biologic": "Enbrel SureClick", "epi": "EpiPen",
+         "xalatan": "Xalatan eye drops"}
 
 NAMES = ["Margaret", "Ahmed", "Lina", "Jamal", "Rosa", "Hassan", "Denise", "Omar", "Grace", "Tyrone",
          "Fatima", "Walter", "Mei", "Carlos"]
@@ -132,8 +208,9 @@ def run(with_weather: bool = True) -> dict:
         c.execute("TRUNCATE readings_5m")  # materialized rows survive a raw-table truncate
         pid = {}
         for key, m in PRODUCTS.items():
-            pid[key] = c.execute("INSERT INTO products (name, model, source) VALUES (%s,%s,'demo') RETURNING id",
-                                 (m["product_name"], json.dumps(m))).fetchone()["id"]
+            pid[key] = c.execute("""INSERT INTO products (name, model, source, source_label, source_url)
+                                    VALUES (%s,%s,'fda',%s,%s) RETURNING id""",
+                                 (m["product_name"], json.dumps(m), SOURCES[key]["label"], SOURCES[key]["url"])).fetchone()["id"]
 
         users = [("You", True, False, config.HOME_LAT, config.HOME_LON)]
         for i, n in enumerate(NAMES):
@@ -148,14 +225,13 @@ def run(with_weather: bool = True) -> dict:
                          VALUES (%s,%s,%s,%s, ST_SetSRID(ST_MakePoint(%s,%s),4326))""", (*r, r[3], r[2]))
 
         items = []  # (user, product, nickname, profile)
-        items += [(uid[0], pid["glp1"], "My GLP-1 pen", "fridge"),
-                  (uid[0], pid["insulin"], "Insulin vial (kitchen fridge)", "fridge_gap"),
+        items += [(uid[0], pid["glp1"], "My Mounjaro pen", "fridge"),
+                  (uid[0], pid["insulin"], "Insulin pen: Lantus (kitchen fridge)", "fridge_gap"),
                   (uid[0], pid["epi"], "EpiPen in backpack", "room")]
         for u in uid[1:]:
             for _ in range(rng.choice([1, 1, 2])):
-                key = rng.choice(["insulin", "insulin", "glp1", "biologic", "epi"])
-                items.append((u, pid[key], PRODUCTS[key]["product_name"].replace(" (demo)", ""),
-                              "room" if key == "epi" else "fridge"))
+                key = rng.choice(["insulin", "novolog", "tresiba", "glp1", "trulicity", "victoza", "biologic", "epi", "xalatan"])
+                items.append((u, pid[key], SHORT[key], "room" if key == "epi" else "fridge"))
         iid = []
         for u, p, nick, prof in items:
             iid.append((c.execute("INSERT INTO items (user_id, product_id, nickname, started_at) VALUES (%s,%s,%s,%s) RETURNING id",
@@ -302,13 +378,19 @@ def add_policy() -> None:
                         start_offset => INTERVAL '{config.POLICY_START_OFFSET}',
                         end_offset => INTERVAL '5 minutes',
                         schedule_interval => INTERVAL '1 minute', if_not_exists => TRUE)""")
+        # Columnstore (hypercore): the current API since TimescaleDB 2.18; add_compression_policy is deprecated.
         enabled = c.execute("""SELECT compression_enabled FROM timescaledb_information.hypertables
                                WHERE hypertable_name = 'readings'""").fetchone()
-        if enabled and not enabled["compression_enabled"]:
-            c.execute("""ALTER TABLE readings SET (timescaledb.compress,
-                            timescaledb.compress_segmentby = 'item_id',
-                            timescaledb.compress_orderby = 'ts DESC')""")
-        c.execute("SELECT add_compression_policy('readings', INTERVAL '2 days', if_not_exists => TRUE)")
+        try:
+            if enabled and not enabled["compression_enabled"]:
+                c.execute("""ALTER TABLE readings SET (timescaledb.enable_columnstore = true,
+                                timescaledb.segmentby = 'item_id', timescaledb.orderby = 'ts DESC')""")
+            c.execute("CALL add_columnstore_policy('readings', after => INTERVAL '2 days', if_not_exists => true)")
+        except Exception:  # TimescaleDB < 2.18
+            if enabled and not enabled["compression_enabled"]:
+                c.execute("""ALTER TABLE readings SET (timescaledb.compress,
+                                timescaledb.compress_segmentby = 'item_id', timescaledb.compress_orderby = 'ts DESC')""")
+            c.execute("SELECT add_compression_policy('readings', INTERVAL '2 days', if_not_exists => TRUE)")
         c.execute("SELECT add_retention_policy('readings', INTERVAL '400 days', if_not_exists => TRUE)")
         c.execute("SELECT add_retention_policy('weather_hourly', INTERVAL '400 days', if_not_exists => TRUE)")
         if not c.execute("SELECT 1 FROM timescaledb_information.jobs WHERE proc_name = 'check_alerts'").fetchone():
@@ -323,9 +405,14 @@ def check_alerts() -> None:
 def compress_history() -> int:
     """Compress every chunk older than a day now, instead of waiting for the policy."""
     with db.conn(autocommit=True) as c:
-        rows = c.execute("""SELECT compress_chunk(ch, if_not_compressed => TRUE) AS ch
-                            FROM show_chunks('readings', older_than => now() - INTERVAL '1 day') ch""").fetchall()
-    return len(rows)
+        chunks = [r["ch"] for r in c.execute("""SELECT ch::text AS ch FROM show_chunks('readings',
+                                                 older_than => now() - INTERVAL '1 day') ch""").fetchall()]
+        for ch in chunks:
+            try:
+                c.execute("CALL convert_to_columnstore(%s::regclass, if_not_columnstore => true)", (ch,))
+            except Exception:  # TimescaleDB < 2.18
+                c.execute("SELECT compress_chunk(%s::regclass, if_not_compressed => TRUE)", (ch,))
+    return len(chunks)
 
 
 def apply_schema() -> None:

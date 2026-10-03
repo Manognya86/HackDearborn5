@@ -87,3 +87,16 @@ def test_gap_widens_uncertainty_and_silence_changes_status():
     st = engine.status_of({"remaining": 1.0, "stale_minutes": 360}, worst, "Labeled storage")
     assert st["code"] == "CHECK"
     assert engine.status_of({"remaining": 1.0, "stale_minutes": 0}, 1.0, "Labeled storage")["code"] == "USE"
+
+
+def test_every_seed_product_is_sourced_and_consistent():
+    from lifelog.seed import SOURCES
+    assert set(SOURCES) == set(PRODUCTS)
+    for key, m in PRODUCTS.items():
+        assert "dailymed.nlm.nih.gov" in SOURCES[key]["url"], key
+        assert m["target_quote"] and "demo" not in m["target_quote"].lower(), key
+        assert m["target_min_c"] < m["target_max_c"], key
+        for b in m["bands"]:
+            assert b["quote"] and b["budget_hours"] > 0 and b["min_c"] < b["max_c"], (key, b)
+            # an allowance band sits outside the labeled storage range, never inside it
+            assert b["min_c"] >= m["target_max_c"] or b["max_c"] <= m["target_min_c"], (key, b)
