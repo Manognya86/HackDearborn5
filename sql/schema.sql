@@ -1,0 +1,131 @@
+-- LIFELOG Home schema. Idempotent: safe to re-run.
+CREATE EXTENSION IF NOT EXISTS timescaledb;
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- ---------------------------------------------------------------- people & places
+CREATE TABLE IF NOT EXISTS users (
+    id        SERIAL PRIMARY KEY,
+    name      TEXT NOT NULL,
+    is_me     BOOLEAN NOT NULL DEFAULT FALSE,
+    can_host  BOOLEAN NOT NULL DEFAULT FALSE,   -- neighbor with generator/fridge who opted in
+    lat       DOUBLE PRECISION NOT NULL,
+    lon       DOUBLE PRECISION NOT NULL,
+    geom      geometry(Point, 4326) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS refuges (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    lat        DOUBLE PRECISION NOT NULL,
+    lon        DOUBLE PRECISION NOT NULL,
+    geom       geometry(Point, 4326) NOT NULL,
+    has_fridge BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS refuges_geom ON refuges USING gist (geom);
+CREATE INDEX IF NOT EXISTS users_geom ON users USING gist (geom);
+
+-- ---------------------------------------------------------------- medicines
+-- model = stability model extracted by Gemini from the label (see lifelog/models.py)
+CREATE TABLE IF NOT EXISTS products (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    model      JSONB NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'demo',   -- 'demo' | 'gemini'
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id         SERIAL PRIMARY KEY,
+    user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    product_id INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    nickname   TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now()   -- life budget starts counting here
+);
+
+-- ---------------------------------------------------------------- telemetry
+CREATE TABLE IF NOT EXISTS readings (
+    ts          TIMESTAMPTZ NOT NULL,
+    item_id     INT NOT NULL,
+    temp_c      DOUBLE PRECISION NOT NULL,
+    humidity    DOUBLE PRECISION,
+    source      TEXT NOT NULL DEFAULT 'sensor',  -- sensor | voice | weather | manual
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+SELECT create_hypertable('readings', by_range('ts', INTERVAL '1 day'), if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS readings_item_ts ON readings (item_id, ts DESC);
+
+-- 5-minute rollup. Real-time mode so fresh data shows up immediately; anything older than
+-- the materialization watermark only changes after a refresh (the late-data problem).
+CREATE MATERIALIZED VIEW IF NOT EXISTS readings_5m
+WITH (timescaledb.continuous, timescaledb.materialized_only = false) AS
+SELECT time_bucket('5 minutes', ts) AS bucket,
+       item_id,
+       avg(temp_c) AS avg_temp,
+       min(temp_c) AS min_temp,
+       max(temp_c) AS max_temp,
+       count(*)    AS n
+FROM readings
+GROUP BY bucket, item_id
+WITH NO DATA;
+
+CREATE TABLE IF NOT EXISTS ingest_log (
+    id          SERIAL PRIMARY KEY,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    item_id     INT NOT NULL,
+    source      TEXT NOT NULL,
+    n           INT NOT NULL,
+    min_ts      TIMESTAMPTZ NOT NULL,
+    max_ts      TIMESTAMPTZ NOT NULL,
+    late        BOOLEAN NOT NULL,
+    refreshed   BOOLEAN NOT NULL
+);
+
+-- ---------------------------------------------------------------- exposure pattern library
+CREATE TABLE IF NOT EXISTS pattern_library (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL,
+    outcome     TEXT NOT NULL,
+    fingerprint vector(12) NOT NULL
+);
+
+-- ---------------------------------------------------------------- outages
+CREATE TABLE IF NOT EXISTS outages (
+    id             SERIAL PRIMARY KEY,
+    name           TEXT NOT NULL,
+    area           geometry(Polygon, 4326) NOT NULL,
+    started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    est_restore_at TIMESTAMPTZ NOT NULL,
+    indoor_temp_c  DOUBLE PRECISION NOT NULL,      -- expected indoor temp without power
+    source         TEXT NOT NULL DEFAULT 'demo',
+    active         BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS outages_area ON outages USING gist (area);
+
+-- ---------------------------------------------------------------- porch heat index
+CREATE TABLE IF NOT EXISTS zips (
+    zip  TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    lat  DOUBLE PRECISION NOT NULL,
+    lon  DOUBLE PRECISION NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS weather_hourly (
+    ts     TIMESTAMPTZ NOT NULL,
+    zip    TEXT NOT NULL,
+    temp_c DOUBLE PRECISION NOT NULL
+);
+SELECT create_hypertable('weather_hourly', by_range('ts', INTERVAL '7 days'), if_not_exists => TRUE);
+CREATE UNIQUE INDEX IF NOT EXISTS weather_hourly_zip_ts ON weather_hourly (zip, ts);
+
+CREATE TABLE IF NOT EXISTS deliveries (
+    id           SERIAL PRIMARY KEY,
+    zip          TEXT NOT NULL REFERENCES zips(zip),
+    carrier      TEXT NOT NULL,
+    pharmacy     TEXT NOT NULL,
+    product_kind TEXT NOT NULL,
+    delivered_at TIMESTAMPTZ NOT NULL,
+    picked_up_at TIMESTAMPTZ NOT NULL
+);
