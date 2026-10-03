@@ -116,3 +116,67 @@ RETURNS DOUBLE PRECISION LANGUAGE sql IMMUTABLE AS $$
     SELECT air + CASE WHEN extract(hour FROM ts AT TIME ZONE 'America/Detroit') BETWEEN 10 AND 17
                       THEN 12.0 ELSE 2.0 END
 $$;
+
+-- Exposure statistics. Mean Kinetic Temperature (USP <1079>) with dH/R = 83.144 kJ/mol / R = 10000 K,
+-- over equal-length 5-minute buckets: the single temperature that would cause the same total degradation.
+CREATE OR REPLACE FUNCTION item_stats(p_item INT)
+RETURNS TABLE (mkt_c DOUBLE PRECISION, avg_c DOUBLE PRECISION, min_c DOUBLE PRECISION,
+               max_c DOUBLE PRECISION, hours DOUBLE PRECISION)
+LANGUAGE sql STABLE AS $$
+    SELECT 10000.0 / -ln(avg(exp(-10000.0 / (t.avg_temp + 273.15)))) - 273.15,
+           avg(t.avg_temp), min(t.min_temp), max(t.max_temp), count(*) * 5 / 60.0
+    FROM item_timeline(p_item) t
+$$;
+
+-- Every alert condition that holds right now, one row per (item, kind).
+CREATE OR REPLACE FUNCTION current_conditions()
+RETURNS TABLE (item_id INT, kind TEXT, severity TEXT, message TEXT)
+LANGUAGE sql STABLE AS $$
+    WITH last AS (
+        SELECT i.id, i.nickname, p.model, u.geom, t.bucket, t.avg_temp, t.zone, t.used
+        FROM items i
+        JOIN products p ON p.id = i.product_id
+        JOIN users u ON u.id = i.user_id
+        CROSS JOIN LATERAL (SELECT * FROM item_timeline(i.id) x ORDER BY x.bucket DESC LIMIT 1) t
+    )
+    SELECT id, 'frozen', 'critical',
+           nickname || ' froze (' || round(avg_temp::numeric, 1) || '°C). The label says not to use frozen product.'
+    FROM last WHERE zone = 'Frozen'
+    UNION ALL
+    SELECT id, 'above_limit', 'critical',
+           nickname || ' is at ' || round(avg_temp::numeric, 1) || '°C, above its labeled limit: using '
+           || round((burn_rate(avg_temp, model) * 100)::numeric, 1) || '% of its life budget per hour.'
+    FROM last WHERE zone = 'Above labeled limit'
+    UNION ALL
+    SELECT id, 'budget_exhausted', 'critical', nickname || ' has used its entire life budget.'
+    FROM last WHERE used >= 1
+    UNION ALL
+    SELECT id, 'budget_low', 'warning',
+           nickname || ' has ' || round(((1 - used) * 100)::numeric, 0) || '% of its life budget left.'
+    FROM last WHERE used >= 0.5 AND used < 1
+    UNION ALL
+    SELECT id, 'sensor_silent', 'warning',
+           nickname || ' sensor has been silent since '
+           || to_char(bucket AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '. Exposure is unknown.'
+    FROM last WHERE bucket < now() - INTERVAL '30 minutes'
+    UNION ALL
+    SELECT l.id, 'outage', 'warning',
+           l.nickname || ' is inside ' || o.name || '. Power expected back around '
+           || to_char(o.est_restore_at AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '.'
+    FROM last l JOIN outages o ON o.active AND ST_Contains(o.area, l.geom)
+$$;
+
+-- Scheduled by add_job every minute: opens new alerts, refreshes messages, resolves cleared ones.
+CREATE OR REPLACE PROCEDURE check_alerts(job_id INT DEFAULT 0, config JSONB DEFAULT NULL)
+LANGUAGE plpgsql AS $$
+BEGIN
+    DROP TABLE IF EXISTS _cond;
+    CREATE TEMP TABLE _cond ON COMMIT DROP AS SELECT * FROM current_conditions();
+    UPDATE alerts a SET resolved_at = now()
+    WHERE a.resolved_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM _cond c WHERE c.item_id = a.item_id AND c.kind = a.kind);
+    INSERT INTO alerts (item_id, kind, severity, message)
+    SELECT c.item_id, c.kind, c.severity, c.message FROM _cond c
+    ON CONFLICT (item_id, kind) WHERE resolved_at IS NULL
+    DO UPDATE SET message = EXCLUDED.message, severity = EXCLUDED.severity;
+END $$;
