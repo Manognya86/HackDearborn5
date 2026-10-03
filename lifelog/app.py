@@ -52,14 +52,22 @@ def _llm_state(d: dict) -> dict:
 # ------------------------------------------------------------------ health
 @app.get("/api/health")
 def health():
-    out = {"gemini": bool(config.GEMINI_API_KEY), "model": config.GEMINI_MODEL, "database": False}
+    """Liveness for the demo and the host: database, TimescaleDB, background jobs, LISTEN thread. No secrets."""
+    out = {"gemini": bool(config.GEMINI_API_KEY), "model": config.GEMINI_MODEL, "database": False, **realtime.status()}
     try:
         out["extensions"] = {r["extname"]: r["extversion"] for r in
                              db.query("SELECT extname, extversion FROM pg_extension")}
         out["database"] = True
+        out["timescaledb_version"] = out["extensions"].get("timescaledb")
+        jobs = db.one("""SELECT count(*) AS jobs, coalesce(sum(s.total_failures), 0) AS failures,
+                                count(*) FILTER (WHERE s.last_run_status = 'Failed') AS failing
+                         FROM timescaledb_information.jobs j LEFT JOIN timescaledb_information.job_stats s USING (job_id)
+                         WHERE j.job_id >= 1000""")
+        out.update(jobs=jobs["jobs"], job_failures=int(jobs["failures"]), jobs_failing_now=jobs["failing"])
         out["watermark"] = services.cagg_watermark()
     except Exception as e:  # noqa: BLE001
-        out["db_error"] = str(e)
+        out["db_error"] = str(e).splitlines()[0]
+    out["ok"] = out["database"] and out.get("jobs_failing_now") == 0 and out["listen_thread_alive"]
     return out
 
 

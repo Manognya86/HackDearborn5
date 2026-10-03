@@ -16,6 +16,8 @@ _subscribers: set[queue.Queue] = set()
 _lock = threading.Lock()
 _started = threading.Event()
 _alert_wake = threading.Event()
+_listening = threading.Event()          # set while the LISTEN connection is up
+_threads: dict[str, threading.Thread] = {}
 
 
 def publish(event: dict) -> None:
@@ -50,13 +52,21 @@ def _listen_forever() -> None:
         try:
             with psycopg.connect(config.DATABASE_URL, autocommit=True) as conn:
                 conn.execute(f"LISTEN {CHANNEL}")
+                _listening.set()
                 for n in conn.notifies():
                     try:
                         publish(json.loads(n.payload))
                     except ValueError:
                         publish({"type": "raw", "payload": n.payload})
         except Exception:  # connection dropped: back off and reconnect
+            _listening.clear()
             time.sleep(3)
+
+
+def status() -> dict:
+    t = _threads.get("listen")
+    return {"listen_thread_alive": bool(t and t.is_alive()), "listen_connected": _listening.is_set(),
+            "subscribers": subscriber_count()}
 
 
 def _alert_loop() -> None:
@@ -82,5 +92,7 @@ def start() -> None:
     if _started.is_set() or not config.DATABASE_URL:
         return
     _started.set()
-    threading.Thread(target=_listen_forever, daemon=True, name="pg-listen").start()
-    threading.Thread(target=_alert_loop, daemon=True, name="alert-check").start()
+    _threads["listen"] = threading.Thread(target=_listen_forever, daemon=True, name="pg-listen")
+    _threads["alerts"] = threading.Thread(target=_alert_loop, daemon=True, name="alert-check")
+    for t in _threads.values():
+        t.start()

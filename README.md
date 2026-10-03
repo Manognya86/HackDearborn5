@@ -162,6 +162,31 @@ themes, installable to the home screen (web app manifest), print stylesheet for 
 ### Real time on Tiger Cloud
 `LISTEN/NOTIFY` needs a direct (not transaction-pooled) connection: use the default `tiger db uri`, not `--pooled`.
 
+### Deploy (Render or Railway)
+LIFELOG needs a **long-running process**: the Server-Sent Events broker, the `LISTEN lifelog` thread, the alert
+re-check thread and the live simulator all live in memory. Serverless hosts (Vercel, Netlify functions, Cloud Run
+scaled to zero, Lambda) won't work.
+- Start command (also in `Procfile`):
+  `uvicorn lifelog.app:app --host 0.0.0.0 --port $PORT --workers 1 --proxy-headers --forwarded-allow-ips="*"`
+  One worker: the SSE broker is per process.
+- Build command: `pip install -r requirements.txt`.
+- Secrets / environment variables: `DATABASE_URL` (the **direct** Tiger URI with `sslmode=require`) and `GEMINI_API_KEY`.
+  Optional: `GEMINI_MODEL`, `GEMINI_TIMEOUT_S` (default 30).
+- Health check path: `/api/health` (`ok` is true when the database answers, no Tiger job is failing and the LISTEN thread is alive).
+- Seed once from your machine (`scripts/setup_db.py`), not on every deploy.
+
+### Known-good backup before judging (fork)
+A fork is an independent copy of the service, taken now, with its own background jobs:
+```bash
+tiger service fork lifelog --name lifelog-judging --no-set-default   # --no-set-default keeps 'lifelog' as the CLI default
+tiger service list                                                   # wait until lifelog-judging is READY
+tiger db save-password lifelog-judging                               # only if the next command says the password isn't available
+tiger db uri lifelog-judging --with-password                         # direct URI of the fork
+```
+To switch, replace `DATABASE_URL` in `.env` (and on the host) with the fork's URI and restart the app; run
+`scripts/verify_tiger.py --no-wait` against it. Switch back the same way. `--last-snapshot` forks faster from the last
+snapshot; `--to-timestamp 2026-10-04T14:00:00Z` forks from a point in time.
+
 ### Tests
 ```bash
 .venv/Scripts/python -m pytest -q
