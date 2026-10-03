@@ -43,3 +43,20 @@ def test_alert_job_is_scheduled():
     from lifelog import db
     assert db.one("SELECT 1 AS ok FROM timescaledb_information.jobs WHERE proc_name = 'check_alerts'")
 
+
+
+def test_daily_rollup_matches_the_5_minute_rollup():
+    """readings_1d (built on readings_5m) carries the same budget burn as the item timeline."""
+    from lifelog import db
+    for item in db.query("SELECT id FROM items ORDER BY id LIMIT 4"):
+        daily = db.one("SELECT coalesce(sum(burn), 0) AS b FROM readings_1d WHERE item_id = %s", (item["id"],))["b"]
+        five = db.one("SELECT coalesce(sum(burn), 0) AS b FROM item_timeline(%s)", (item["id"],))["b"]
+        assert abs(daily - five) < 1e-6, (item, daily, five)
+
+
+def test_expired_and_in_use_alerts():
+    from lifelog import db, services
+    services.check_alerts()
+    kinds = {r["kind"] for r in db.query("SELECT kind FROM alerts WHERE resolved_at IS NULL")}
+    expired = db.one("SELECT count(*) AS n FROM items WHERE expires_on < current_date")["n"]
+    assert ("expired" in kinds) == (expired > 0)

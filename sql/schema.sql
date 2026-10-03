@@ -47,6 +47,19 @@ CREATE TABLE IF NOT EXISTS items (
     started_at TIMESTAMPTZ NOT NULL DEFAULT now()   -- life budget starts counting here
 );
 
+ALTER TABLE items ADD COLUMN IF NOT EXISTS opened_at  TIMESTAMPTZ;  -- first use / opening
+ALTER TABLE items ADD COLUMN IF NOT EXISTS expires_on DATE;         -- printed expiration date
+ALTER TABLE items ADD COLUMN IF NOT EXISTS lot        TEXT;         -- lot number, matched against FDA recalls
+
+-- Read-only caregiver links
+CREATE TABLE IF NOT EXISTS shares (
+    token      TEXT PRIMARY KEY,
+    user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label      TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked    BOOLEAN NOT NULL DEFAULT FALSE
+);
+
 -- ---------------------------------------------------------------- telemetry
 CREATE TABLE IF NOT EXISTS readings (
     ts          TIMESTAMPTZ NOT NULL,

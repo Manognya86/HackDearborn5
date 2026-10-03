@@ -53,3 +53,9 @@ def refresh_readings(start, end) -> None:
         c.execute("""CALL refresh_continuous_aggregate('readings_5m',
                         time_bucket('5 minutes', %s::timestamptz),
                         time_bucket('5 minutes', %s::timestamptz) + INTERVAL '5 minutes')""", (start, end))
+        try:  # the daily rollup sits on top of readings_5m and must follow it
+            c.execute("""CALL refresh_continuous_aggregate('readings_1d',
+                            time_bucket('1 day', %s::timestamptz),
+                            time_bucket('1 day', %s::timestamptz) + INTERVAL '1 day')""", (start, end))
+        except Exception:
+            pass

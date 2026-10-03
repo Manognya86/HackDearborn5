@@ -18,14 +18,14 @@ def _band(label, lo, hi, hours, quote):
 
 
 def _model(name, form, tmin, tmax, tq, bands, *, freeze_quote, cold_ok=True, freeze=True, above=8.0,
-           above_quote=ASSUME, above_assumed=True, visual=(), discard=(), notes=""):
+           above_quote=ASSUME, above_assumed=True, visual=(), discard=(), notes="", in_use=0):
     return {
         "product_name": name, "form": form,
         "target_min_c": tmin, "target_max_c": tmax, "target_quote": tq,
         "freeze_discard": freeze, "freeze_c": 0.0, "freeze_quote": freeze_quote,
         "cold_ok": cold_ok, "bands": bands,
         "above_limit_budget_hours": above, "above_limit_is_assumption": above_assumed, "above_limit_quote": above_quote,
-        "visual_checks": list(visual), "discard_rules": list(discard), "notes": notes,
+        "in_use_days": in_use, "visual_checks": list(visual), "discard_rules": list(discard), "notes": notes,
     }
 
 
@@ -41,20 +41,21 @@ PRODUCTS = {
         "Store unused LANTUS in a refrigerator between 36°F and 46°F (2°C and 8°C).",
         [_band(ROOM, 8, 30, 28 * 24, "Storage table, 3 mL SoloStar prefilled pen: Room Temperature (up to 86°F [30°C]): 28 days.")],
         freeze_quote="Do not freeze. Discard LANTUS if it has been frozen.",
-        discard=["Protect LANTUS from direct heat and light.", "In-use pens: room temperature only (do not refrigerate), 28 days."]),
+        discard=["Protect LANTUS from direct heat and light.", "In-use pens: room temperature only (do not refrigerate), 28 days."],
+        in_use=28),
     "novolog": _model(
         "NovoLog FlexPen (insulin aspart)", "prefilled pen", 2, 8,
         "Store unused NOVOLOG in a refrigerator between 2°C to 8°C (36°F to 46°F).",
         [_band(ROOM, 8, 30, 28 * 24, "Storage table, 3 mL FlexPen: Room Temperature (up to 30°C [86°F]): 28 days.")],
         freeze_quote="Do not freeze NOVOLOG and do not use NOVOLOG if it has been frozen.",
         discard=["Do not expose NOVOLOG to excessive heat or light.",
-                 "In an insulin pump: change it after exposure to temperatures that exceed 37°C (98.6°F)."]),
+                 "In an insulin pump: change it after exposure to temperatures that exceed 37°C (98.6°F)."], in_use=28),
     "tresiba": _model(
         "Tresiba FlexTouch (insulin degludec)", "prefilled pen", 2, 8,
         "Store unused TRESIBA in a refrigerator (36°F to 46°F [2°C to 8°C]).",
         [_band(ROOM, 8, 30, 56 * 24, "Storage table, FlexTouch: Room Temperature (up to 86°F [30°C]): 56 days (8 weeks).")],
         freeze_quote="Do not freeze. Do not use TRESIBA if it has been frozen.",
-        discard=["Do not store in the freezer or directly adjacent to the refrigerator cooling element."]),
+        discard=["Do not store in the freezer or directly adjacent to the refrigerator cooling element."], in_use=56),
     "glp1": _model(
         "Mounjaro single-dose pen (tirzepatide)", "single-dose pen", 2, 8,
         "Store MOUNJARO single-dose pen and single-dose vial in a refrigerator at 2°C to 8°C (36°F to 46°F).",
@@ -78,7 +79,7 @@ PRODUCTS = {
         freeze_quote="Do not freeze VICTOZA and do not use VICTOZA if it has been frozen.",
         discard=["Protect VICTOZA from excessive heat and sunlight.",
                  "The 30 days after first use apply even in the fridge; LIFELOG's budget only tracks heat."],
-        notes="The label gives 15–30°C; LIFELOG applies the same allowance to 8–15°C."),
+        notes="The label gives 15–30°C; LIFELOG applies the same allowance to 8–15°C.", in_use=30),
     "biologic": _model(
         "Enbrel SureClick (etanercept)", "autoinjector", 2, 8,
         "Enbrel should be refrigerated at 36°F to 46°F (2°C to 8°C) in the original carton to protect from light or physical damage.",
@@ -106,7 +107,7 @@ PRODUCTS = {
         [_band(ROOM, 8, 25, 6 * 7 * 24, "Once a bottle is opened for use, it may be stored at room temperature up to 25°C (77°F) for 6 weeks."),
          _band("Shipping allowance", 25, 40, 8 * 24, "During shipment to the patient, the bottle may be maintained at temperatures "
                                                     "up to 40°C (104°F) for a period not exceeding 8 days.")],
-        freeze_quote="Not stated on label", freeze=False, discard=["Protect from light."]),
+        freeze_quote="Not stated on label", freeze=False, discard=["Protect from light."], in_use=42),
 }
 SOURCES = {
     "insulin": _src("LANTUS", "d5e07a0c-7e14-4756-9152-9fea485d654a", "20250602"),
@@ -122,6 +123,8 @@ SOURCES = {
 SHORT = {"insulin": "Lantus pen", "novolog": "NovoLog FlexPen", "tresiba": "Tresiba pen", "glp1": "Mounjaro pen",
          "trulicity": "Trulicity pen", "victoza": "Victoza pen", "biologic": "Enbrel SureClick", "epi": "EpiPen",
          "xalatan": "Xalatan eye drops"}
+
+HISTORY_DAYS = 14
 
 NAMES = ["Margaret", "Ahmed", "Lina", "Jamal", "Rosa", "Hassan", "Denise", "Omar", "Grace", "Tyrone",
          "Fatima", "Walter", "Mei", "Carlos"]
@@ -201,11 +204,12 @@ PATTERNS = [
 # ------------------------------------------------------------------ main seed
 def run(with_weather: bool = True) -> dict:
     t_end = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    t_start = t_end - timedelta(hours=72)
+    t_start = t_end - timedelta(days=HISTORY_DAYS)
     with db.conn() as c:
         c.execute("""TRUNCATE alerts, readings, ingest_log, items, products, users, refuges, outages, pattern_library,
                      deliveries, weather_hourly, zips RESTART IDENTITY CASCADE""")
         c.execute("TRUNCATE readings_5m")  # materialized rows survive a raw-table truncate
+        c.execute("TRUNCATE readings_1d")
         pid = {}
         for key, m in PRODUCTS.items():
             pid[key] = c.execute("""INSERT INTO products (name, model, source, source_label, source_url)
@@ -226,24 +230,43 @@ def run(with_weather: bool = True) -> dict:
 
         items = []  # (user, product, nickname, profile)
         items += [(uid[0], pid["glp1"], "My Mounjaro pen", "fridge"),
-                  (uid[0], pid["insulin"], "Insulin pen: Lantus (kitchen fridge)", "fridge_gap"),
-                  (uid[0], pid["epi"], "EpiPen in backpack", "room")]
+                  (uid[0], pid["insulin"], "Insulin pen: Lantus (spare, kitchen fridge)", "fridge_gap"),
+                  (uid[0], pid["epi"], "EpiPen in backpack", "room"),
+                  (uid[0], pid["victoza"], "Victoza pen (in use)", "fridge")]
         for u in uid[1:]:
             for _ in range(rng.choice([1, 1, 2])):
                 key = rng.choice(["insulin", "novolog", "tresiba", "glp1", "trulicity", "victoza", "biologic", "epi", "xalatan"])
                 items.append((u, pid[key], SHORT[key], "room" if key == "epi" else "fridge"))
         iid = []
-        for u, p, nick, prof in items:
-            iid.append((c.execute("INSERT INTO items (user_id, product_id, nickname, started_at) VALUES (%s,%s,%s,%s) RETURNING id",
-                                  (u, p, nick, t_start)).fetchone()["id"], prof))
+        today = t_end.date()
+        for k, (u, p, nick, prof) in enumerate(items):
+            in_use = next(m["in_use_days"] for key, m in PRODUCTS.items() if pid[key] == p)
+            if k < 4:  # yours: the Lantus is an unopened spare (fridge); the Victoza pen is in use, 3 days left
+                opened = t_end - timedelta(days=27) if k == 3 else None
+                expires = today + timedelta(days=(120, 180, 270, 150)[k])
+                lot = ("D7K2291", "MP4410A", "1FM882", "NV30215")[k]
+            else:      # neighbors: a realistic mix, including one past its expiry and one past its in-use period
+                opened = t_end - timedelta(days=rng.randint(3, 34)) if in_use else None
+                expires = today + timedelta(days=-3 if k == 5 else rng.randint(20, 400))
+                lot = None
+            iid.append((c.execute("""INSERT INTO items (user_id, product_id, nickname, started_at, opened_at, expires_on, lot)
+                                     VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                                  (u, p, nick, t_start, opened, expires, lot)).fetchone()["id"], prof))
 
         with c.cursor() as cur, cur.copy("COPY readings (ts, item_id, temp_c, source) FROM STDIN") as cp:
             n = 0
-            for item_id, prof in iid:
-                for t in engine.daterange(t_start, t_end, timedelta(minutes=1)):
+            for k, (item_id, prof) in enumerate(iid):
+                step = timedelta(minutes=1 if k < 4 else 2)   # your sensors every minute, neighbors every 2
+                for t in engine.daterange(t_start, t_end, step):
                     if prof == "fridge_gap" and t > t_end - timedelta(hours=6):
                         continue  # sensor offline: these readings arrive later via /api/demo/late_upload
-                    cp.write_row((t, item_id, room(t) if prof == "room" else fridge(t), "sensor"))
+                    v = room(t) if prof == "room" else fridge(t)
+                    ago = (t_end - t).total_seconds() / 86400
+                    if k == 0 and 9.0 < ago < 9.125:      # Mounjaro: 3 h in a bag at work, ~27C
+                        v = 27 + rng.gauss(0, 0.4)
+                    if k == 1 and 5.0 < ago < 5.25:       # Lantus: fridge door left ajar overnight, ~12C
+                        v = 12 + rng.gauss(0, 0.6)
+                    cp.write_row((t, item_id, round(v, 2), "sensor"))
                     n += 1
 
         for kind, name, desc, outcome in PATTERNS:
@@ -258,6 +281,7 @@ def run(with_weather: bool = True) -> dict:
     with db.conn(autocommit=True) as c:
         # leave the in-progress bucket to real-time aggregation
         c.execute("CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
+        c.execute("CALL refresh_continuous_aggregate('readings_1d', NULL, time_bucket('1 day', now()))")
     compressed = compress_history()
     check_alerts()
     return {"readings": n, "items": len(iid), "users": len(uid), "compressed_chunks": compressed, **porch}
@@ -374,6 +398,8 @@ def scenario_clear_storm() -> dict:
 def add_policy() -> None:
     """Background jobs Tiger runs for us: aggregate refresh, compression, retention, alert checks."""
     with db.conn(autocommit=True) as c:
+        c.execute("""SELECT add_continuous_aggregate_policy('readings_1d', start_offset => INTERVAL '3 days',
+                        end_offset => INTERVAL '1 hour', schedule_interval => INTERVAL '15 minutes', if_not_exists => TRUE)""")
         c.execute(f"""SELECT add_continuous_aggregate_policy('readings_5m',
                         start_offset => INTERVAL '{config.POLICY_START_OFFSET}',
                         end_offset => INTERVAL '5 minutes',
