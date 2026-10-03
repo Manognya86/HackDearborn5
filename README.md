@@ -21,6 +21,12 @@ model (Gemini), tracks every exposure as time-series in Tiger Data, and tells yo
 | Refill letter | Exposure timeline as evidence | Writes the letter |
 | Trip pre-check | | Itinerary → legs; advice (weather from Open-Meteo) |
 | Porch Heat Index | `weather_hourly` hypertable × `deliveries` | Pharmacy brief |
+| Alerts | `check_alerts` procedure scheduled with `add_job` every minute; opens, updates and resolves alerts | Explains them in Ask LIFELOG |
+| Exposure statistics | Mean Kinetic Temperature in SQL; time-weighted average via Toolkit `time_weight()` | |
+| Storage | Compression policy (segment by item, 11× on old chunks), retention policies | |
+| Under the hood page | Hypertable sizes, compression ratio, job runs, aggregate vs raw timing | |
+| Live sensors | Streams a reading per medicine every 5 s into the real-time aggregate | |
+| Ask LIFELOG | Tools query Tiger | Function calling over 5 tools, shows which ones it called |
 
 The life-budget math lives in **both** SQL (`sql/functions.sql`) and Python (`lifelog/engine.py`);
 `tests/test_parity.py` proves they agree.
@@ -32,6 +38,8 @@ The life-budget math lives in **both** SQL (`sql/functions.sql`) and Python (`li
 - At or below freezing when the label says "do not freeze": budget gone.
 - Outage projection: a closed fridge warms toward indoor temperature with a 6 h time constant.
 - Mailbox temperature = air + 12°C (10am–6pm), +2°C otherwise.
+- Mean Kinetic Temperature uses ΔH = 83.144 kJ/mol (USP <1079>) over 5-minute buckets.
+- The live simulator speeds up outage warming so the demo moves within minutes.
 
 Demo product models are marked "(demo)" and are **not** copied from real labels. Upload a real label to get real quotes.
 This is a decision-support prototype, not medical advice.
@@ -64,11 +72,16 @@ Open http://localhost:8000.
 4. **Late data (the Tiger moment):** *Insulin: late upload (no fix)*. Dashboard 100% vs raw truth ~91%, because the late rows sit behind the continuous-aggregate watermark. Click **Repair late windows**: both agree. (Normal path: `/api/ingest` detects late rows and refreshes just those buckets.)
 5. **Summer storm outage → Outage rescue.** Ranked list: your hot-car EpiPen fails first (~3 h) vs 12 h to restore. Click **Gemini dispatch plan**.
 6. **Refill letter** on the insulin. Then **Porch heat** → **Gemini pharmacy brief**.
+7. **Alerts** tab: the hot-car and outage alerts were opened by a job running inside Tiger; the sensor-silent alert resolved itself when the late data arrived.
+8. **Ask LIFELOG:** "Which of my medicines is in the worst shape, and why?" Gemini calls the tools and shows which.
+9. **Under the hood:** compression ratio, scheduled jobs, aggregate vs raw timing. Optionally **Start live sensors** and watch the dashboard move.
 
 ## API
 `GET /api/items`, `GET /api/items/{id}`, `GET /api/items/{id}/compare`, `POST /api/items/{id}/advice|visual|letter|trip|repair`,
 `POST /api/products/extract`, `POST /api/products`, `POST /api/ingest`, `POST /api/voice`,
-`GET /api/rescue`, `POST /api/rescue/plan`, `GET /api/porch`, `POST /api/porch/brief`, `POST /api/demo/{reset|hot_car|late_upload|storm|clear_storm}`.
+`GET /api/rescue`, `POST /api/rescue/plan`, `GET /api/porch`, `POST /api/porch/brief`, `GET /api/alerts`, `POST /api/alerts/check`,
+`POST /api/alerts/{id}/ack`, `GET /api/tiger`, `POST /api/sim/{start|stop|status}`, `POST /api/ask`,
+`POST /api/demo/{reset|hot_car|late_upload|storm|clear_storm}`.
 
 `POST /api/ingest` body:
 ```json
