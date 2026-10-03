@@ -1,5 +1,8 @@
 import atexit
+import time
 from contextlib import contextmanager
+
+import psycopg
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -46,15 +49,28 @@ def execute(sql: str, params=None) -> None:
         c.execute(sql, params)
 
 
+def call_refresh(c, sql: str, params=None, attempts: int = 8) -> None:
+    """CALL refresh_continuous_aggregate(...), retried while Tiger's own refresh policy holds the same
+    window ("could not refresh continuous aggregate ... due to a concurrent refresh"). Autocommit only."""
+    for k in range(attempts):
+        try:
+            c.execute(sql, params)
+            return
+        except psycopg.errors.LockNotAvailable:
+            if k == attempts - 1:
+                raise
+            time.sleep(min(10.0, 1.5 * (k + 1)))
+
+
 def refresh_readings(start, end) -> None:
     """Targeted continuous-aggregate refresh, widened to whole 5-minute buckets so the bucket
     containing `end` is re-materialized too. Must run outside a transaction."""
     with conn(autocommit=True) as c:
-        c.execute("""CALL refresh_continuous_aggregate('readings_5m',
+        call_refresh(c, """CALL refresh_continuous_aggregate('readings_5m',
                         time_bucket('5 minutes', %s::timestamptz),
                         time_bucket('5 minutes', %s::timestamptz) + INTERVAL '5 minutes')""", (start, end))
         try:  # the daily rollup sits on top of readings_5m and must follow it
-            c.execute("""CALL refresh_continuous_aggregate('readings_1d',
+            call_refresh(c, """CALL refresh_continuous_aggregate('readings_1d',
                             time_bucket('1 day', %s::timestamptz),
                             time_bucket('1 day', %s::timestamptz) + INTERVAL '1 day')""", (start, end))
         except Exception:

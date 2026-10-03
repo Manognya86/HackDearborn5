@@ -43,7 +43,8 @@ Extensions used: `timescaledb`, `timescaledb_toolkit` (enabled by default on Tig
 | `DATABASE_URL` | yes | Direct Tiger URI, `...?sslmode=require`. Secret. |
 | `GEMINI_API_KEY` | for Gemini features | https://aistudio.google.com/apikey. Secret. Without it, everything Tiger-powered still works. |
 | `GEMINI_MODEL` | no | Default `gemini-3.8-flash`. |
-| `GEMINI_TIMEOUT_S` | no | Per-request timeout, default 30. Use **60**: verdicts have been measured at ~30 s. |
+| `GEMINI_TIMEOUT_S` | no | Per-request timeout, default 60 (verdicts have been measured at ~30 s). |
+| `GEMINI_FALLBACK_MODELS` | no | Tried in order on 503 / 429 / 404. Default `gemini-3.7-flash,gemini-3.5-flash,gemini-3.1-flash-lite`. |
 | `POLICY_START_OFFSET` | no | Refresh window of the `readings_5m` policy, default `2 hours`. |
 | `PORT` | host-provided | The container and Procfile bind to it (default 8000). |
 
@@ -115,7 +116,8 @@ To switch: replace `DATABASE_URL` in `.env` (and on the host), restart the app (
 
 1. Rehearse with **Demo controls → Reset** as often as you like (it returns to the small seed and drops scale data).
 2. `scripts/setup_db.py --scale 50`, then **don't press Reset** during judging.
-3. `scripts/verify_tiger.py` must end with `ALL CHECKS PASSED`.
+3. `scripts/verify_tiger.py` must end with `ALL CHECKS PASSED`; `scripts/validate_app.py` must end with `0 failed`
+   (it uses ~15 Gemini requests: run it before, not right before, judging on a free-tier key).
 4. `scripts/benchmark.py`, and paste the table.
 5. Fork (section 7).
 6. Start the app (or rebuild/restart the container) and open **Under the hood** once: the benchmark warms up in the
@@ -129,6 +131,8 @@ To switch: replace `DATABASE_URL` in `.env` (and on the host), restart the app (
 | `password not available to include in connection string` | `tiger db save-password <service>`. |
 | Live updates stop (`listen_connected: false`) | You're on a pooled URI: use the direct one. |
 | A Gemini button says "didn't answer within N s" or "rate-limited" | Retry; raise `GEMINI_TIMEOUT_S`. Tiger features are unaffected. |
+| "429 free-tier limit of 20 requests per day reached" | The key is on Gemini's free tier (20 requests per model per day; a chatbot question uses 3-5). Enable billing on the key's Google AI Studio project, or add models to `GEMINI_FALLBACK_MODELS`. The chatbot still answers from Tiger data, labeled "without AI". |
+| `could not refresh continuous aggregate ... due to a concurrent refresh` | Fixed: refreshes retry while Tiger's policy job holds the window (`db.call_refresh`). |
 | Under the hood takes minutes | The benchmark scans every raw reading; it's cached for 10 min after the first run. |
 | `pytest` fails `test_daily_rollup_matches_the_5_minute_rollup` | Run tests while the demo is idle: "late upload (no fix)" (press **Repair late windows**) or live sensors / a storm in progress make the 15-minute daily rollup lag on purpose. |
 | Docker can't reach the database | `.env` values must not be quoted; check `docker logs lifelog`. |
