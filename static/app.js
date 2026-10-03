@@ -21,6 +21,10 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error(body.detail || `${r.status} ${r.statusText}`);
   return body;
 }
+const LANG_KEY = "lifelog.lang";
+let lang = "en";
+try { lang = localStorage.getItem(LANG_KEY) || "en"; } catch { /* storage blocked */ }
+const withLang = (path) => path + (path.includes("?") ? "&" : "?") + "lang=" + lang;
 const post = (path, data) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data ?? {}) });
 async function busy(btn, fn) {
   btn.disabled = true; btn.classList.add("spin");
@@ -65,6 +69,12 @@ function setDetailOpen(open) {
   $(".meds-layout").classList.toggle("detail-open", open);
   $("#back-btn").hidden = !(open && isMobile() && currentView === "meds");
 }
+$("#lang").value = lang;
+$("#lang").addEventListener("change", (e) => {
+  lang = e.target.value;
+  try { localStorage.setItem(LANG_KEY, lang); } catch { /* storage blocked */ }
+  toast(lang === "en" ? "Gemini will answer in English" : "Gemini will answer in " + e.target.selectedOptions[0].text);
+});
 $("#back-btn").addEventListener("click", () => { setDetailOpen(false); window.scrollTo(0, 0); });
 $("#help-btn").addEventListener("click", () => {
   $("#help").hidden = false;
@@ -191,11 +201,13 @@ async function openItem(id, { quiet = false } = {}) {
         ${d.patterns.map((p) => `<p><b>${esc(p.name)}</b> <span class="muted small">${Math.round(p.similarity * 100)}% similar</span><br><span class="muted small">${esc(p.outcome)}</span></p>`).join("")}
       </details>
       <details class="fold" data-k="label" ${openFolds.includes("label") ? "open" : ""}>
-        <summary>Label rules <span class="muted">${d.item.product_source === "gemini" ? "read from your label by Gemini" : "demo product"}</span></summary>
+        <summary>Label rules <span class="muted">${d.item.product_source === "fda" ? "from the FDA label" : d.item.product_source === "gemini" ? "read by Gemini" : "demo product"}</span></summary>
+        ${d.item.source_url ? `<p class="source">${icon("file")}<a href="${esc(d.item.source_url)}" target="_blank" rel="noopener">${esc(d.item.source_label || "Source")}</a></p>` : ""}
         <blockquote>${esc(m.target_quote)}</blockquote>
         ${(m.bands || []).map((b) => `<blockquote>${esc(b.quote)}</blockquote>`).join("")}
         ${m.freeze_discard ? `<blockquote>${esc(m.freeze_quote)}</blockquote>` : ""}
-        <p class="muted small">Above the highest labeled limit: ${m.above_limit_budget_hours} h of tolerance, halving for every 10°C hotter${m.above_limit_is_assumption ? " (LIFELOG's assumption: the label doesn't say)" : ""}.</p>
+        ${(m.discard_rules || []).map((r) => `<blockquote>${esc(r)}</blockquote>`).join("")}
+        <p class="muted small">Above the highest labeled limit: ${m.above_limit_budget_hours} h of tolerance, halving for every 10°C hotter${m.above_limit_is_assumption ? " (LIFELOG's assumption: the label doesn't say)" : ""}.${m.notes ? " " + esc(m.notes) : ""}</p>
       </details>
     </div>`;
 
@@ -205,12 +217,12 @@ async function openItem(id, { quiet = false } = {}) {
   const acc = $("details[data-k=accuracy]");
   if (acc.open) loadAccuracy(id);
   acc.addEventListener("toggle", () => acc.open && loadAccuracy(id));
-  $("#advice-btn").onclick = (e) => busy(e.currentTarget, async () => renderVerdict(await post(`/api/items/${id}/advice`)));
+  $("#advice-btn").onclick = (e) => busy(e.currentTarget, async () => renderVerdict(await post(withLang(`/api/items/${id}/advice`))));
   $("#photo").onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     const fd = new FormData(); fd.append("photo", f);
     await busy($("label[for=photo]"), async () => {
-      const v = await api(`/api/items/${id}/visual`, { method: "POST", body: fd });
+      const v = await api(withLang(`/api/items/${id}/visual`), { method: "POST", body: fd });
       $("#ai-box").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Gemini photo check</div>
         <div class="verdict ${v.looks_ok ? "USE" : "DO_NOT_USE"}">${v.looks_ok ? "No visible warning signs" : "Visible warning sign"}</div>
         <ul>${v.observations.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>
@@ -219,7 +231,7 @@ async function openItem(id, { quiet = false } = {}) {
     });
   };
   $("#letter-btn").onclick = (e) => busy(e.currentTarget, async () => {
-    const r = await post(`/api/items/${id}/letter`);
+    const r = await post(withLang(`/api/items/${id}/letter`));
     $("#ai-box").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Refill / replacement letter</div><pre class="log">${esc(r.letter)}</pre>
       <button class="btn" id="copy-letter">Copy</button></div>`;
     $("#copy-letter").onclick = () => navigator.clipboard.writeText(r.letter).then(() => toast("Copied"));
@@ -228,7 +240,7 @@ async function openItem(id, { quiet = false } = {}) {
 }
 
 function renderVerdict(v) {
-  $("#ai-box").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Gemini · based on your data and the label</div>
+  $("#ai-box").innerHTML = `<div class="ai-box" dir="auto"><div class="tag">${icon("spark")}Gemini · based on your data and the label</div>
     <div class="verdict ${esc(v.verdict)}">${esc(v.headline)}</div><p>${esc(v.explanation)}</p>
     <ul>${v.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>${v.cited_quotes.map((q) => `<blockquote>${esc(q)}</blockquote>`).join("")}</div>`;
 }
@@ -297,7 +309,25 @@ $("#label-form").addEventListener("submit", (e) => {
   const fd = new FormData(); fd.append("label", f);
   busy(e.submitter, async () => {
     const m = await api("/api/products/extract", { method: "POST", body: fd });
-    $("#label-result").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Gemini read this from your label</div>
+    renderModel(m, { tag: "Gemini read this from your label" });
+  });
+});
+$("#name-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  busy(e.submitter, async () => {
+    const r = await post("/api/products/lookup", { name: $("#med-name").value });
+    renderModel(r.model, {
+      tag: r.method === "openfda" ? "From the official FDA label (openFDA), read by Gemini" : "Found by Gemini web search (Google Search grounding)",
+      source_label: r.source_label, source_url: r.source_url, sources: r.sources, label_text: r.label_text,
+    });
+  });
+});
+
+function renderModel(m, meta) {
+    $("#label-result").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}${esc(meta.tag)}</div>
+      ${meta.source_url ? `<p class="source">${icon("file")}<a href="${esc(meta.source_url)}" target="_blank" rel="noopener">${esc(meta.source_label)}</a></p>` : ""}
+      ${(meta.sources || []).length > 1 ? `<p class="muted small">Other sources: ${meta.sources.slice(1, 4).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a>`).join(" · ")}</p>` : ""}
+      ${meta.label_text ? `<details class="fold"><summary>Label text it read <span class="muted">check this matches your medicine</span></summary><div class="label-text">${esc(meta.label_text)}</div></details>` : ""}
       <h3>${esc(m.product_name)} <span class="muted small">${esc(m.form)}</span></h3>
       <p>Store at <b>${m.target_min_c}–${m.target_max_c}°C</b></p><blockquote>${esc(m.target_quote)}</blockquote>
       ${m.bands.map((b) => `<p><b>${esc(b.label)}</b>: ${b.min_c}–${b.max_c}°C for up to ${hrs(b.budget_hours)}</p><blockquote>${esc(b.quote)}</blockquote>`).join("")}
@@ -311,11 +341,10 @@ $("#label-form").addEventListener("submit", (e) => {
     $("#save-model").onclick = (ev) => busy(ev.currentTarget, async () => {
       let model;
       try { model = JSON.parse($("#model-json").value); } catch { throw new Error("The JSON has a typo. Fix it or reload the label."); }
-      const r = await post("/api/products", { model, nickname: $("#nick").value });
+      const r = await post("/api/products", { model, nickname: $("#nick").value, source_label: meta.source_label || null, source_url: meta.source_url || null });
       toast("Added. Connect a sensor or send a voice report."); currentItem = r.item_id; show("meds"); openItem(r.item_id);
     });
-  });
-});
+}
 
 // ------------------------------------------------------------------ voice (WAV recorder)
 let rec = null;
@@ -397,13 +426,13 @@ loaders.rescue = async () => {
       <td class="num">${hrs(p.hours_left)}</td><td>${p.refuges[0] ? `${esc(p.refuges[0].name)}<div class="muted small">${p.refuges[0].miles} mi</div>` : "–"}</td></tr>`).join("")}</table></div>`;
 };
 $("#plan-btn").addEventListener("click", (e) => busy(e.currentTarget, async () => {
-  const r = await post("/api/rescue/plan");
+  const r = await post(withLang("/api/rescue/plan"));
   $("#rescue-plan").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Gemini dispatch plan</div>${md(r.plan)}</div>`;
 }));
 
 // ------------------------------------------------------------------ trip
 $("#trip-btn").addEventListener("click", (e) => busy(e.currentTarget, async () => {
-  const r = await post(`/api/items/${$("#trip-item").value}/trip`, { itinerary: $("#trip-text").value });
+  const r = await post(withLang(`/api/items/${$("#trip-item").value}/trip`), { itinerary: $("#trip-text").value });
   $("#trip-result").innerHTML = `
     <div class="stats"><div class="stat"><div class="v">${pct(r.start_remaining)}</div><div class="k">before the trip</div></div>
       <div class="stat"><div class="v">${pct(r.end_remaining)}</div><div class="k">after the trip</div></div>
@@ -464,7 +493,7 @@ $("#alerts-check").addEventListener("click", (e) => busy(e.currentTarget, async 
 // ------------------------------------------------------------------ ask LIFELOG
 const history = [];
 function addMsg(role, html) {
-  const el = document.createElement("div"); el.className = `msg ${role}`; el.innerHTML = html;
+  const el = document.createElement("div"); el.className = `msg ${role}`; el.dir = "auto"; el.innerHTML = html;
   $("#chat").appendChild(el); el.scrollIntoView({ block: "end", behavior: "smooth" }); return el;
 }
 async function askLifelog(q) {
@@ -472,7 +501,7 @@ async function askLifelog(q) {
   addMsg("user", esc(q)); $("#ask-input").value = "";
   const pending = addMsg("model", `<span class="spin muted">Looking at your data</span>`);
   try {
-    const r = await post("/api/ask", { question: q, history });
+    const r = await post(withLang("/api/ask"), { question: q, history });
     history.push({ role: "user", text: q }, { role: "model", text: r.answer });
     pending.innerHTML = md(r.answer) + (r.tool_calls.length ? `<div class="tools">looked up: ${r.tool_calls.map((c) => `${esc(c.name)}(${esc(Object.values(c.args).join(", "))})`).join(" · ")}</div>` : "");
   } catch (e) { pending.innerHTML = `<span class="muted">${esc(e.message.includes("GEMINI_API_KEY") ? "Gemini isn't set up yet: add GEMINI_API_KEY to .env." : e.message)}</span>`; }
@@ -562,9 +591,22 @@ function connectLive() {
   es.onerror = () => { $("#live").textContent = "Reconnecting…"; $("#live").classList.remove("on"); };
 }
 
+// ------------------------------------------------------------------ deep links: #view=rescue, #item=3&open=accuracy
+async function applyHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.get("item")) {
+    show("meds");
+    await openItem(+h.get("item"));
+    for (const k of (h.get("open") || "").split(",").filter(Boolean)) {
+      const d = $(`#item-detail details[data-k="${k}"]`); if (d) d.open = true;
+    }
+  } else if (h.get("view")) show(h.get("view"));
+}
+addEventListener("hashchange", applyHash);
+
 // ------------------------------------------------------------------ boot
 health();
 refreshBadge();
-connectLive();
-loadItems().catch((e) => { $("#item-list").innerHTML = `<div class="card"><p>${esc(e.message)}</p><p class="muted">Check .env and run scripts/setup_db.py.</p></div>`; });
+if (!location.search.includes("nolive")) connectLive(); else $("#live").hidden = true;
+loadItems().then(applyHash).catch((e) => { $("#item-list").innerHTML = `<div class="card"><p>${esc(e.message)}</p><p class="muted">Check .env and run scripts/setup_db.py.</p></div>`; });
 addEventListener("resize", () => setDetailOpen($("#view-meds").classList.contains("detail-open")));

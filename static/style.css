@@ -185,6 +185,12 @@ blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--bran
 .dropzone { flex: 1; min-width: 220px; display: flex; align-items: center; gap: 10px; padding: 14px; border: 2px dashed var(--border-strong); border-radius: 12px; cursor: pointer; color: var(--muted); }
 .dropzone input { max-width: 100%; }
 
+.lang { width: auto; min-height: 36px; padding: 4px 8px; font-size: 13px; }
+.divider { display: flex; align-items: center; gap: 12px; color: var(--faint); margin: 22px 0 10px; }
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.source { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+.label-text { font-size: 13px; color: var(--muted); max-height: 160px; overflow: auto; background: var(--surface-2); border-radius: 10px; padding: 10px; }
+
 /* alerts list */
 .alert { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; margin: 8px 0; border: 1px solid var(--border); background: var(--surface); }
 .alert svg { width: 20px; height: 20px; margin-top: 1px; }
@@ -208,9 +214,9 @@ blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--bran
 
 /* ------------------------------------------------------------ tablet & phone */
 @media (max-width: 1100px) {
-  .meds-layout { grid-template-columns: 1fr; }
+  .meds-layout { grid-template-columns: minmax(0, 1fr); }
   .med-grid { position: static; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
-  .two-col { grid-template-columns: 1fr; }
+  .two-col { grid-template-columns: minmax(0, 1fr); }
   .map { height: 420px; }
 }
 @media (max-width: 760px) {
@@ -221,7 +227,10 @@ blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--bran
   main { padding: 0 12px 24px; }
   .only-mobile:not([hidden]) { display: inline-grid; }
   .card { padding: 14px; border-radius: 12px; }
-  .med-grid { grid-template-columns: 1fr; }
+  .med-grid { grid-template-columns: minmax(0, 1fr); }
+  .hero > div { min-width: 0; width: 100%; }
+  .hero .why { flex-basis: 100%; }
+  .main, main, .card, .detail { min-width: 0; max-width: 100vw; }
   .hero { grid-template-columns: 1fr; justify-items: center; text-align: center; }
   .hero .status, .facts, .actions { justify-content: center; }
   .actions .btn { flex: 1 1 140px; justify-content: center; }
@@ -245,3 +254,4 @@ blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--bran
   details.fold { display: block; } details.fold > * { display: block !important; }
   .card, .ai-box { box-shadow: none; break-inside: avoid; }
 }
+.live-pill[hidden], .btn[hidden] { display: none; }
