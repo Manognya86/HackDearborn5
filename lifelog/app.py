@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, engine, gem, seed, services
+from . import assistant, config, db, engine, gem, seed, services, sim
 from .models import StabilityModel
 
 app = FastAPI(title="LIFELOG Home")
@@ -76,7 +76,9 @@ def compare(item_id: int):
 
 @app.post("/api/items/{item_id}/repair")
 def repair(item_id: int):
-    return services.repair_late(item_id)
+    res = services.repair_late(item_id)
+    services.check_alerts()
+    return res
 
 
 @app.post("/api/items/{item_id}/advice")
@@ -209,19 +211,68 @@ def porch_brief():
     return {"brief": gem.porch_brief(services.porch_stats())}
 
 
+# ------------------------------------------------------------------ alerts (written by the check_alerts job)
+@app.get("/api/alerts")
+def get_alerts(mine: bool = True, include_resolved: bool = False):
+    return services.alerts(mine_only=mine, include_resolved=include_resolved)
+
+
+@app.post("/api/alerts/check")
+def run_alert_check():
+    services.check_alerts()
+    return services.alerts(mine_only=False)
+
+
+@app.post("/api/alerts/{alert_id}/ack")
+def ack_alert(alert_id: int):
+    db.execute("UPDATE alerts SET acked = TRUE WHERE id = %s", (alert_id,))
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ under the hood
+@app.get("/api/tiger")
+def tiger():
+    return services.tiger_stats()
+
+
+# ------------------------------------------------------------------ live sensor simulator
+@app.post("/api/sim/{action}")
+def simulator(action: str):
+    if action == "start":
+        return sim.start()
+    if action == "stop":
+        return sim.stop()
+    return sim.status()
+
+
+# ------------------------------------------------------------------ Ask LIFELOG (Gemini function calling)
+class AskIn(BaseModel):
+    question: str
+    history: list[dict] = []
+
+
+@app.post("/api/ask")
+def ask(body: AskIn):
+    return assistant.ask(body.question, body.history)
+
+
 # ------------------------------------------------------------------ demo controls
 @app.post("/api/demo/{scenario}")
 def demo(scenario: str, auto_refresh: bool = True):
     if scenario == "reset":
+        sim.stop()
         seed.apply_schema()
         return seed.run(with_weather=True)
     if scenario == "hot_car":
-        return seed.scenario_hot_car(seed.me_item("EpiPen"))
-    if scenario == "late_upload":
+        res = seed.scenario_hot_car(seed.me_item("EpiPen"))
+    elif scenario == "late_upload":
         iid = seed.me_item("Insulin")
-        return {"item_id": iid, **services.ingest(iid, seed.late_upload_points(iid), "sensor", auto_refresh)}
-    if scenario == "storm":
-        return seed.scenario_storm()
-    if scenario == "clear_storm":
-        return seed.scenario_clear_storm()
-    raise HTTPException(404, "unknown scenario")
+        res = {"item_id": iid, **services.ingest(iid, seed.late_upload_points(iid), "sensor", auto_refresh)}
+    elif scenario == "storm":
+        res = seed.scenario_storm()
+    elif scenario == "clear_storm":
+        res = seed.scenario_clear_storm()
+    else:
+        raise HTTPException(404, "unknown scenario")
+    services.check_alerts()
+    return res
