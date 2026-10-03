@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<meta name="robots" content="noindex">
+<title>LIFELOG · Shared medicines</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/style.css?v=8">
+<style>
+  .share-wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 40px; }
+  .share-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+  .share-list { display: grid; gap: 10px; margin-top: 14px; }
+  .share-item { display: grid; grid-template-columns: 64px 1fr; gap: 14px; align-items: center; }
+</style>
+</head>
+<body>
+<div class="share-wrap">
+  <div class="share-head"><img src="/static/icon.svg" width="32" height="32" alt=""><h1 id="title">Shared medicines</h1></div>
+  <p class="muted small" id="sub">Read-only view. Updates every 15 seconds.</p>
+  <div id="alerts"></div>
+  <div id="list" class="share-list"><p class="muted">Loading…</p></div>
+  <p class="muted small" style="margin-top:20px">LIFELOG supports your judgment; it isn't medical advice. When in doubt, ask a pharmacist.</p>
+</div>
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const pct = (x) => `${Math.round((x ?? 0) * 100)}%`;
+const COLOR = { USE: "--ok", USE_SOON: "--warn", CHECK: "--warn", ASK_PHARMACIST: "--warn", DO_NOT_USE: "--bad" };
+function ring(v, code) {
+  const s = 64, w = 7, r = (s - w) / 2, c = 2 * Math.PI * r;
+  return `<div class="ring" style="width:${s}px;height:${s}px"><svg viewBox="0 0 ${s} ${s}"><circle class="track" cx="${s / 2}" cy="${s / 2}" r="${r}" stroke-width="${w}"/>
+    <circle class="val" cx="${s / 2}" cy="${s / 2}" r="${r}" stroke-width="${w}" stroke="var(${COLOR[code] || "--brand"})" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - Math.max(0, Math.min(1, v)))}"/></svg>
+    <div class="lbl" style="font-size:15px">${pct(v)}</div></div>`;
+}
+const token = location.pathname.split("/").pop();
+async function load() {
+  try {
+    const r = await fetch(`/api/share/${encodeURIComponent(token)}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "This link is no longer active.");
+    document.title = `LIFELOG · ${d.name === "You" ? "Shared" : d.name + "'s"} medicines`;
+    document.getElementById("title").textContent = d.label ? `Medicines shared with ${d.label}` : "Shared medicines";
+    document.getElementById("sub").textContent = `Read-only view · updated ${new Date(d.updated).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · refreshes every 15 seconds`;
+    document.getElementById("alerts").innerHTML = d.alerts.map((a) => `<div class="banner ${a.severity === "critical" ? "bad" : "warn"}">${esc(a.message)}</div>`).join("");
+    document.getElementById("list").innerHTML = d.items.map((i) => `
+      <div class="card share-item">${ring(i.remaining, i.status.code)}
+        <div><b>${esc(i.nickname)}</b><div class="muted small">${esc(i.product_name)}</div>
+          <span class="pill ${i.status.code}">${esc(i.status.label)}</span>
+          <div class="small" style="margin-top:4px">${esc(i.status.why)}</div>
+          ${i.dates && i.dates.use_by ? `<div class="muted small">Use by ${new Date(i.dates.use_by_date + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })} (${esc(i.dates.use_by_reason)})</div>` : ""}
+        </div></div>`).join("") || `<p class="muted">No medicines yet.</p>`;
+  } catch (e) {
+    document.getElementById("list").innerHTML = `<div class="card"><p>${esc(e.message)}</p></div>`;
+    document.getElementById("alerts").innerHTML = "";
+  }
+}
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>

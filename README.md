@@ -32,6 +32,11 @@ model (Gemini), tracks every exposure as time-series in Tiger Data, and tells yo
 | Data quality | Ingest rejects impossible values and duplicates, flags implausible jumps, logs counts | |
 | Precautions | Care checklist from the label + situation (too warm, outage, sensor silent) + 48 h heat/freeze forecast | |
 | Exports | CSV exposure log per medicine; print-friendly page | |
+| Opened / expiry dates | `items.opened_at`, `expires_on`, `lot`; alert rules for expired, in-use period over, use-by within 3 days | Label extraction includes the in-use period ("discard 28 days after opening") |
+| 30-day exposure calendar | `readings_1d`: a hierarchical continuous aggregate built on `readings_5m`, with its own refresh policy | |
+| FDA recall check | Lot numbers stored per item | openFDA drug enforcement reports, cached 6 h, matched by brand and lot |
+| Caregiver share link | `shares` table; read-only `/s/<token>` page, revocable, QR code | |
+| Notifications + offline | Alerts pushed over LISTEN/NOTIFY trigger a system notification | Service worker caches the app shell |
 
 The life-budget math lives in **both** SQL (`sql/functions.sql`) and Python (`lifelog/engine.py`);
 `tests/test_parity.py` proves they agree.
@@ -74,6 +79,10 @@ retrieved through [openFDA](https://open.fda.gov/apis/drug/label/). Each links t
 | Enbrel SureClick (etanercept) | 2–8°C | 20–25°C, one period of 30 days |
 | EpiPen (epinephrine) | 20–25°C | excursions 15–30°C (no time limit given) |
 | Xalatan, opened (latanoprost) | 2–8°C | up to 25°C for 6 weeks; up to 40°C for 8 days |
+
+Calendar limits apply on top of the life budget: the printed expiration date and the label's in-use period after
+opening (Lantus and NovoLog 28 days, Tresiba 56, Victoza 30, Xalatan 6 weeks). Either one turns the status to
+"Do not use" no matter how cold the medicine was kept.
 
 Where a label is silent (time tolerated above its highest limit, EpiPen excursion length, temperatures between the
 fridge range and a stated room range) LIFELOG says so in the app and uses a flagged assumption.
