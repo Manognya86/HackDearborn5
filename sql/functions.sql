@@ -153,16 +153,38 @@ LANGUAGE sql STABLE AS $$
     FROM item_timeline(p_item) t
 $$;
 
+-- Live temperature trend: least-squares slope over the item's last p_minutes of 5-minute buckets, read from
+-- the real-time continuous aggregate (so it includes readings that arrived seconds ago). Feeds the trend
+-- forecast (lifelog/engine.py trend_forecast), the early-warning alerts below and the outage warming model.
+CREATE OR REPLACE FUNCTION item_trend(p_item INT, p_minutes INT DEFAULT 30)
+RETURNS TABLE (slope_c_per_h DOUBLE PRECISION, r2 DOUBLE PRECISION, n BIGINT,
+               last_temp DOUBLE PRECISION, last_bucket TIMESTAMPTZ)
+LANGUAGE sql STABLE AS $$
+    WITH w AS (
+        SELECT r.bucket, r.avg_temp FROM readings_5m r
+        WHERE r.item_id = p_item
+          AND r.bucket > (SELECT max(x.bucket) FROM readings_5m x WHERE x.item_id = p_item) - make_interval(mins => p_minutes)
+    )
+    SELECT regr_slope(w.avg_temp, extract(epoch FROM w.bucket) / 3600.0),
+           regr_r2(w.avg_temp, extract(epoch FROM w.bucket) / 3600.0),
+           count(*),
+           (SELECT y.avg_temp FROM w y ORDER BY y.bucket DESC LIMIT 1),
+           max(w.bucket)
+    FROM w
+$$;
+
 -- Every alert condition that holds right now, one row per (item, kind).
 CREATE OR REPLACE FUNCTION current_conditions()
 RETURNS TABLE (item_id INT, kind TEXT, severity TEXT, message TEXT)
 LANGUAGE sql STABLE AS $$
     WITH last AS (
-        SELECT i.id, i.nickname, i.opened_at, i.expires_on, p.model, u.geom, t.bucket, t.avg_temp, t.zone, t.used
+        SELECT i.id, i.nickname, i.opened_at, i.expires_on, p.model, u.geom, t.bucket, t.avg_temp, t.zone, t.used,
+               tr.slope_c_per_h AS slope, tr.r2, tr.n AS trend_n, tr.last_temp
         FROM items i
         JOIN products p ON p.id = i.product_id
         JOIN users u ON u.id = i.user_id
         CROSS JOIN LATERAL (SELECT * FROM item_timeline(i.id) x ORDER BY x.bucket DESC LIMIT 1) t
+        CROSS JOIN LATERAL item_trend(i.id) tr
         WHERE NOT u.synthetic   -- scale-mode history is for benchmarks, not people to alert
     )
     SELECT id, 'frozen', 'critical',
@@ -208,6 +230,27 @@ LANGUAGE sql STABLE AS $$
     FROM last WHERE opened_at IS NOT NULL AND coalesce((model->>'in_use_days')::numeric, 0) > 0
       AND opened_at + make_interval(days => round((model->>'in_use_days')::numeric)::int)
           BETWEEN now() AND now() + INTERVAL '3 days'
+    UNION ALL
+    -- early warning: still inside its range, but a steady warming trend reaches the label's max within an hour
+    SELECT id, 'warming_trend', 'warning',
+           nickname || ' is warming ' || round(slope::numeric, 1) || '°C per hour (now ' || round(last_temp::numeric, 1)
+           || '°C). At this rate it leaves its labeled range (' || (model->>'target_max_c') || '°C) in about '
+           || greatest(1, ceil(((model->>'target_max_c')::float8 - last_temp) / slope * 60))::int || ' min.'
+    FROM last WHERE zone = 'Labeled storage' AND bucket >= now() - INTERVAL '15 minutes'
+      AND trend_n >= 4 AND slope >= 1 AND coalesce(r2, 0) >= 0.6
+      AND last_temp <= (model->>'target_max_c')::float8
+      AND ((model->>'target_max_c')::float8 - last_temp) / slope <= 1
+    UNION ALL
+    -- early warning: a "do not freeze" medicine cooling toward freezing within an hour
+    SELECT id, 'freeze_risk', 'warning',
+           nickname || ' is cooling ' || round((-slope)::numeric, 1) || '°C per hour (now ' || round(last_temp::numeric, 1)
+           || '°C). At this rate it reaches freezing in about '
+           || greatest(1, ceil((last_temp - (model->>'freeze_c')::float8) / -slope * 60))::int || ' min.'
+    FROM last WHERE zone <> 'Frozen' AND coalesce((model->>'freeze_discard')::bool, false)
+      AND bucket >= now() - INTERVAL '15 minutes'
+      AND trend_n >= 4 AND slope <= -1 AND coalesce(r2, 0) >= 0.6
+      AND last_temp > (model->>'freeze_c')::float8
+      AND (last_temp - (model->>'freeze_c')::float8) / -slope <= 1
 $$;
 
 -- Scheduled by add_job every minute: opens new alerts, refreshes messages, resolves cleared ones.

@@ -45,21 +45,23 @@ server-side, refreshing both rollups 38 s, columnstore conversion 7 s. Re-run `s
 | Label → stability model | `products.model` JSONB | Reads photo/PDF, structured output with verbatim quotes |
 | Life budget + "what consumed it" | `readings` hypertable → `readings_5m` continuous aggregate → `item_timeline()` / `item_episodes()` SQL (gaps-and-islands) | |
 | Late-arriving sensor data | Watermark detection + targeted `refresh_continuous_aggregate`; raw-vs-aggregate comparison; a strip showing the watermark and where late rows landed | |
+| Live trend forecast | `item_trend()`: least-squares slope and R² over the last 30 min of the real-time `readings_5m` aggregate → "↑ 6.4°C/h · leaves its range in ~25 min", "at this trend it lasts …", 2-hour forecast line on the chart | |
+| Early-warning alerts | `check_alerts` also opens `warming_trend` (still in range, trend reaches the label max within 1 h) and `freeze_risk` (cooling toward 0°C within 1 h) | |
 | Similar exposure histories | `pattern_library` + pgvector cosine search | |
 | "Is it safe?" | | Grounded verdict citing label quotes |
 | Voice report | Writes `source='voice'` readings | Audio → exposure events |
 | Photo check | | Vision vs label's visual warnings |
-| Outage rescue | PostGIS: who's inside the outage polygon, nearest refuge with power | Dispatch plan + SMS (Maps grounding when available) |
+| Outage rescue | PostGIS: who's inside the outage polygon, nearest refuge with power; each fridge's warming time constant measured from its live trend (6 h assumed until there's enough data); the ranking refreshes as readings arrive | Dispatch plan + SMS (Maps grounding when available) |
 | Refill letter | Exposure timeline as evidence | Writes the letter |
 | Trip pre-check | | Itinerary → legs; advice (weather from Open-Meteo) |
 | Porch Heat Index | `weather_hourly` hypertable × `deliveries` | Pharmacy brief |
 | Alerts | `check_alerts` procedure scheduled with `add_job` every minute; opens, updates and resolves alerts | Explains them in Ask LIFELOG |
-| Exposure statistics | Mean Kinetic Temperature in SQL; time-weighted average via Toolkit `time_weight()` | |
+| Exposure statistics | Mean Kinetic Temperature in SQL; time-weighted average via Toolkit `time_weight()`; budget used in the last hour | |
 | Storage | Columnstore policy (segment by item, order by time; 13.4× on compressed chunks at scale), 400-day retention policies | |
 | Under the hood page | Hypertable sizes, compression ratio, job runs; rollup vs raw timings (median of 3) for every budget and the 30-day calendar | |
 | Live sensors | Streams a reading per medicine every 5 s into the real-time aggregate | |
 | Ask LIFELOG | Tools query Tiger | Function calling over 5 tools, shows which ones it called |
-| Real time | `LISTEN/NOTIFY` triggers on `readings` and `alerts` → Server-Sent Events; alerts re-checked within ~2 s of new data | |
+| Real time | `LISTEN/NOTIFY` triggers on `readings` and `alerts` → Server-Sent Events; alerts re-checked within ~2 s of new data; medicines, forecast, outage ranking and the late-data comparison refresh on each event | |
 | Accuracy report | Exact per-reading burn inside the continuous aggregate (joins `items`/`products`), cross-checked against raw SQL and an independent Python recomputation; sensitivity to the 8 h assumption | |
 | Data quality | Ingest rejects impossible values and duplicates, flags implausible jumps, logs counts | |
 | Precautions | Care checklist from the label + situation (too warm, outage, sensor silent) + 48 h heat/freeze forecast | |
@@ -89,10 +91,41 @@ The life-budget math lives in **both** SQL (`sql/functions.sql`) and Python (`li
 - Inside a labeled allowance (e.g. "room temp up to 30°C for 28 days"): `1 / budget_hours` per hour.
 - Above the highest labeled limit: `2^((T − limit)/10) / above_limit_budget_hours` (label value if given, else **8 h, flagged as an assumption**).
 - At or below freezing when the label says "do not freeze": budget gone.
-- Outage projection: a closed fridge warms toward indoor temperature with a 6 h time constant.
+- Outage projection: a closed fridge warms toward indoor temperature (Newton cooling). The time constant is
+  **measured** from the fridge's live trend, τ = (indoor − T) / slope, clamped to 0.25–48 h; until there are 20 minutes
+  of clean data it's an assumed 6 h. The rescue table says which one it used.
 - Mailbox temperature = air + 12°C (10am–6pm), +2°C otherwise.
 - Mean Kinetic Temperature uses ΔH = 83.144 kJ/mol (USP <1079>) over 5-minute buckets.
 - The live simulator speeds up outage warming so the demo moves within minutes.
+
+### Live forecast (recomputed on every reading)
+1. **Trend from Tiger.** `item_trend(item, 30)` runs `regr_slope` / `regr_r2` over the item's last 30 minutes of
+   5-minute buckets in the **real-time** continuous aggregate, so a reading that arrived a second ago is already in it.
+2. **Is it a trend?** Only if there are ≥ 4 buckets, |slope| ≥ 0.5°C/h and R² ≥ 0.6, and the sensor isn't silent.
+   Otherwise the forecast is "steady" and equals the constant-temperature answer exactly (tested).
+3. **Temperature path.** Warming toward a known ambient (the outage's indoor temperature, or ~22°C room for a fridge
+   medicine) follows Newton cooling with τ implied by the slope. With no known ambient (a warming EpiPen in a car),
+   the trend is extrapolated for 1 hour and then held, rather than projected to impossible temperatures.
+4. **Budget along the path.** The same `step_burn` as everything else, minute by minute for 72 h, then the final
+   temperature's rate: minutes until it leaves its labeled range, minutes until freezing, hours until the budget runs out.
+5. **Where it shows.** Medicine cards and detail (trend, "at this trend it lasts"), a dotted 2-hour forecast on the
+   chart, the `warming_trend` / `freeze_risk` alerts (evaluated inside Tiger by `check_alerts`), and the outage ranking.
+`tests/test_forecast.py` checks the closed-form crossing time, the steady case, freezing, the measured τ and a live
+warming ramp through `/api/ingest` that must raise the early warning.
+
+### Where every screen gets its data
+| Screen | Endpoint | From Tiger | Live? |
+|---|---|---|---|
+| My medicines (list, detail, chart) | `/api/items`, `/api/items/{id}` | `readings_5m` (real-time) via `item_timeline()`, `item_episodes()`, `item_trend()`, `item_stats()`, Toolkit `time_weight()`, pgvector `pattern_library`, `alerts` | Yes: refreshes on every `readings` NOTIFY |
+| 30-day calendar | `/api/items/{id}/history` | `readings_1d` (hierarchical continuous aggregate) | On open |
+| How accurate is this? | `/api/items/{id}/accuracy` | aggregate vs raw `readings` vs Python | On open |
+| Alerts (+ badge, notifications) | `/api/alerts`, `/api/stream` | `alerts`, written by the `check_alerts` job; `NOTIFY` on change | Yes |
+| Outage rescue | `/api/rescue` | PostGIS `outages` × `users` × `refuges`, budgets and live trends from `readings_5m` | Yes |
+| Porch heat | `/api/porch` | `weather_hourly` hypertable (Aug 2026 Open-Meteo archive) × `deliveries` | Historical analysis by design |
+| Under the hood | `/api/tiger` | `timescaledb_information.*`, columnstore stats, benchmark (cached 10 min) | On open / Refresh |
+| Demo controls → late data | `/api/items/{id}/compare` | aggregate vs raw, `cagg_watermark`, `ingest_log` | Yes |
+| Caregiver page | `/s/{token}` → `/api/share/{token}` | `shares` + the same item summaries | On open |
+| Not from Tiger | | label text (openFDA / Gemini), recalls (openFDA), 48 h home weather (Open-Meteo, cached 1 h), Gemini answers | |
 
 This is a decision-support prototype, not medical advice.
 
@@ -194,30 +227,14 @@ themes, installable to the home screen (web app manifest), print stylesheet for 
 ### Real time on Tiger Cloud
 `LISTEN/NOTIFY` needs a direct (not transaction-pooled) connection: use the default `tiger db uri`, not `--pooled`.
 
-### Deploy (Render or Railway)
-LIFELOG needs a **long-running process**: the Server-Sent Events broker, the `LISTEN lifelog` thread, the alert
-re-check thread and the live simulator all live in memory. Serverless hosts (Vercel, Netlify functions, Cloud Run
-scaled to zero, Lambda) won't work.
-- Start command (also in `Procfile`):
-  `uvicorn lifelog.app:app --host 0.0.0.0 --port $PORT --workers 1 --proxy-headers --forwarded-allow-ips="*"`
-  One worker: the SSE broker is per process.
-- Build command: `pip install -r requirements.txt`.
-- Secrets / environment variables: `DATABASE_URL` (the **direct** Tiger URI with `sslmode=require`) and `GEMINI_API_KEY`.
-  Optional: `GEMINI_MODEL`, `GEMINI_TIMEOUT_S` (default 30).
-- Health check path: `/api/health` (`ok` is true when the database answers, no Tiger job is failing and the LISTEN thread is alive).
-- Seed once from your machine (`scripts/setup_db.py`), not on every deploy.
-
-### Known-good backup before judging (fork)
-A fork is an independent copy of the service, taken now, with its own background jobs:
+### Deploy
+Docker (Docker Desktop), Render / Railway, environment variables, the Tiger fork backup and the pre-judging checklist
+are in **[DEPLOY.md](DEPLOY.md)**. Quick local container:
 ```bash
-tiger service fork lifelog --name lifelog-judging --no-set-default   # --no-set-default keeps 'lifelog' as the CLI default
-tiger service list                                                   # wait until lifelog-judging is READY
-tiger db save-password lifelog-judging                               # only if the next command says the password isn't available
-tiger db uri lifelog-judging --with-password                         # direct URI of the fork
+docker build -t lifelog .
+docker run -d --name lifelog --restart unless-stopped --env-file .env -e GEMINI_TIMEOUT_S=60 -p 8000:8000 lifelog
 ```
-To switch, replace `DATABASE_URL` in `.env` (and on the host) with the fork's URI and restart the app; run
-`scripts/verify_tiger.py --no-wait` against it. Switch back the same way. `--last-snapshot` forks faster from the last
-snapshot; `--to-timestamp 2026-10-04T14:00:00Z` forks from a point in time.
+then open http://localhost:8000.
 
 ### Tests
 ```bash
@@ -229,7 +246,7 @@ snapshot; `--to-timestamp 2026-10-04T14:00:00Z` forks from a point in time.
 2. **Add medicine:** upload a real label photo. Gemini builds the model with quotes. Track it.
 3. **Demo controls → EpiPen: hot car.** Open the EpiPen: budget drops to ~45%, "Above labeled limit, peak 48°C". The what-if table shows that moving it indoors saves it. Click **Is it safe to use?**
 4. **Late data (the Tiger moment):** *Insulin: late upload (no fix)*. Dashboard ~97–99% vs raw truth ~90%, because the late rows sit behind the continuous-aggregate watermark (the strip shows them in red behind the watermark line). Click **Repair late windows**: the rows turn green and both numbers agree. (Normal path: `/api/ingest` detects late rows and refreshes just those buckets.)
-5. **Summer storm outage → Outage rescue.** Ranked list: your hot-car EpiPen fails first (~3 h) vs 12 h to restore. Click **Gemini dispatch plan**.
+5. **Start live sensors, then Summer storm outage → Outage rescue.** Fridges show a live warming trend (↑ °C/h) and the ranking uses each fridge's measured warming rate. Ranked list: your hot-car EpiPen fails first (~3 h) vs 12 h to restore. Click **Gemini dispatch plan**.
 6. **Refill letter** on the insulin. Then **Porch heat** → **Gemini pharmacy brief**.
 7. **Alerts** tab: the hot-car and outage alerts were opened by a job running inside Tiger; the sensor-silent alert resolved itself when the late data arrived.
 8. **Ask LIFELOG:** "Which of my medicines is in the worst shape, and why?" Gemini calls the tools and shows which.

@@ -270,7 +270,7 @@ blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--bran
   details.fold { display: block; } details.fold > * { display: block !important; }
   .card, .ai-box { box-shadow: none; break-inside: avoid; }
 }
-.live-pill[hidden], .btn[hidden] { display: none; }
+.live-pill[hidden], .btn[hidden], .dates-form[hidden] { display: none; }
 
 /* late-data: continuous-aggregate watermark strip */
 .wm { margin: 26px 0 4px; }
@@ -287,3 +287,7 @@ blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--bran
 .wm-key.mat { background: var(--surface-2); border: 1px solid var(--border-strong); } .wm-key.rt { background: var(--brand-soft); border: 1px solid var(--brand); }
 .wm-key.bad { background: var(--bad); } .wm-key.ok { background: var(--ok); }
 @media (max-width: 520px) { .wm-line span { font-size: 10.5px; } }
+
+/* live trend */
+.trend { color: var(--muted); } .trend.bad { color: var(--warn); font-weight: 650; }
+.med .sub.trend { margin-top: 2px; }

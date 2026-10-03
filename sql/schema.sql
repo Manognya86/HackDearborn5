@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     item_id     INT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     kind        TEXT NOT NULL,      -- frozen | above_limit | budget_exhausted | budget_low | sensor_silent | outage
+                                    -- | expired | in_use_over | in_use_ending | warming_trend | freeze_risk
     severity    TEXT NOT NULL,      -- critical | warning
     message     TEXT NOT NULL,
     resolved_at TIMESTAMPTZ,
