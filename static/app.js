@@ -618,19 +618,26 @@ $$("[data-q]").forEach((b) => b.addEventListener("click", () => askLifelog(b.dat
 
 // ------------------------------------------------------------------ under the hood
 const bytes = (b) => (b == null ? "–" : b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${(b / 1024).toFixed(0)} kB`);
-loaders.tiger = async () => {
+loaders.tiger = async (fresh = false) => {
   if (!$("#tiger-body").innerHTML) $("#tiger-body").innerHTML = `<p class="muted spin">Measuring the database</p>`;
-  const t = await api("/api/tiger");
+  const t = await api(`/api/tiger${fresh ? "?fresh=1" : ""}`);
   const c = t.compression || {};
   const ratio = c.before_compression_total_bytes && c.after_compression_total_bytes ? (c.before_compression_total_bytes / c.after_compression_total_bytes).toFixed(1) : null;
-  const b = t.benchmark_ms;
+  const bm = t.benchmark || {};
+  const ms = (v) => (v == null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${v} ms`);
+  const benchRow = (label, x) => x ? `<tr><td>${label}</td><td class="num">${ms(x.continuous_aggregate_ms)}<div class="muted small">${(+x.aggregate_rows_read).toLocaleString()} rollup rows</div></td>
+    <td class="num">${ms(x.raw_readings_ms)}<div class="muted small">${(+x.raw_rows_scanned).toLocaleString()} raw rows</div></td><td class="num"><b>${x.speedup ?? "–"}×</b></td></tr>` : "";
   $("#tiger-body").innerHTML = `
     <div class="stats">
       <div class="stat"><div class="v">${ratio ? ratio + "×" : "–"}</div><div class="k">smaller after compression (${bytes(c.before_compression_total_bytes)} → ${bytes(c.after_compression_total_bytes)})</div></div>
-      <div class="stat"><div class="v">${b.continuous_aggregate} ms</div><div class="k">every budget, from the live rollup</div></div>
-      <div class="stat"><div class="v">${b.raw_readings} ms</div><div class="k">same, from raw readings</div></div>
+      <div class="stat"><div class="v">${ms(bm.budget_all_items?.continuous_aggregate_ms)}</div><div class="k">every budget, from the live rollup</div></div>
+      <div class="stat"><div class="v">${ms(bm.budget_all_items?.raw_readings_ms)}</div><div class="k">same, from raw readings</div></div>
       <div class="stat"><div class="v">${t.listeners ?? "–"}</div><div class="k">live browser connections</div></div>
     </div>
+    <h3>Rollup vs raw readings</h3>
+    <div class="table-wrap"><table><tr><th>Query</th><th class="num">Continuous aggregate</th><th class="num">Raw readings</th><th class="num">Faster</th></tr>
+    ${benchRow("Life budget, every medicine", bm.budget_all_items)}${benchRow("30-day calendar, every medicine", bm.calendar_30d)}</table></div>
+    <p class="muted small">Median of ${bm.runs ?? 3} runs after a warm-up${bm.measured_at ? ", measured " + fmt(bm.measured_at) : ""}. Refresh to re-measure.</p>
     <h3>Time-series tables (hypertables)</h3>
     <div class="table-wrap"><table><tr><th>Table</th><th class="num">Rows</th><th class="num">Chunks</th><th class="num">Size</th><th>Compression</th></tr>
     ${t.hypertables.map((h) => `<tr><td><code>${esc(h.name)}</code></td><td class="num">${(+h.rows).toLocaleString()}</td><td class="num">${h.chunks}</td><td class="num">${bytes(h.bytes)}</td><td>${h.compression_enabled ? "on" : "–"}</td></tr>`).join("")}</table></div>
@@ -642,7 +649,7 @@ loaders.tiger = async () => {
       <td>${j.last_run_started_at ? fmt(j.last_run_started_at) + " · " + esc(j.last_run_status || "") : "–"}</td></tr>`).join("")}</table></div>
     <h3>Extensions</h3><p>${t.extensions.map((e) => `<span class="pill on">${esc(e.extname)} ${esc(e.extversion)}</span>`).join(" ")}</p>`;
 };
-$("#tiger-refresh").addEventListener("click", (e) => busy(e.currentTarget, loaders.tiger));
+$("#tiger-refresh").addEventListener("click", (e) => busy(e.currentTarget, () => loaders.tiger(true)));
 
 // ------------------------------------------------------------------ demo controls
 const log = (o) => { $("#demo-log").textContent = `${new Date().toLocaleTimeString()}  ${JSON.stringify(o, null, 1)}\n` + $("#demo-log").textContent; };

@@ -131,6 +131,19 @@ Open http://localhost:8000.
   Needs the `timescaledb`, `vector` and `postgis` extensions (`check_setup.py` lists what's available).
 - **Local:** `docker run -d --name lifelog-db -p 55432:5432 -e POSTGRES_PASSWORD=lifelog timescale/timescaledb-ha:pg17`, then `DATABASE_URL=postgresql://postgres:lifelog@localhost:55432/postgres`.
 
+### Scale mode (benchmark data)
+```bash
+.venv/Scripts/python scripts/setup_db.py --scale 50     # demo seed + 50 synthetic medicines x 90 days of 1-minute readings
+.venv/Scripts/python scripts/benchmark.py               # Markdown table: sizes, compression, rollup vs raw timings
+```
+History is generated **server-side** (`INSERT ... SELECT` over `generate_series`, one transaction per day), then both
+continuous aggregates are refreshed over the full range and old chunks are converted to the columnstore. The script prints
+a storage estimate first; sizes above 50 need `--yes`. Synthetic users (`users.synthetic`) count everywhere Tiger is
+measured but are left out of alerts, the outage demo and the live simulator.
+
+**Demo controls → Reset returns to the small seed** (14 days, 26 medicines) and drops scale data. Rehearse with Reset,
+then run `setup_db.py --scale 50` right before judging and don't press Reset during it.
+
 ### Phones and other devices
 Responsive layout: sidebar on desktop, bottom tab bar on phones, safe-area insets for notched phones, light and dark
 themes, installable to the home screen (web app manifest), print stylesheet for a pharmacist summary.
