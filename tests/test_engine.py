@@ -100,3 +100,22 @@ def test_every_seed_product_is_sourced_and_consistent():
             assert b["quote"] and b["budget_hours"] > 0 and b["min_c"] < b["max_c"], (key, b)
             # an allowance band sits outside the labeled storage range, never inside it
             assert b["min_c"] >= m["target_max_c"] or b["max_c"] <= m["target_min_c"], (key, b)
+
+
+def test_use_by_is_the_earlier_of_expiry_and_in_use_period():
+    from datetime import date, datetime, timedelta, timezone
+    now = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
+    d = engine.dates_info(now - timedelta(days=20), date(2027, 1, 1), 28, now)
+    assert d["use_by_reason"] == "28 days after opening" and d["use_by_date"] == "2026-10-11"
+    assert not d["expired"] and not d["in_use_over"] and 7.9 < d["days_left"] < 8.1
+    d = engine.dates_info(None, date(2026, 10, 2), 28, now)
+    assert d["expired"] and d["use_by_date"] == "2026-10-02"
+    assert engine.dates_info(None, date(2026, 10, 3), 0, now)["expired"] is False   # usable through its expiry day
+
+
+def test_calendar_limits_override_a_healthy_budget():
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 10, 3, tzinfo=timezone.utc)
+    over = engine.dates_info(now - timedelta(days=30), None, 28, now)
+    st = engine.status_of({"remaining": 1.0, "stale_minutes": 0}, 1.0, "Labeled storage", over)
+    assert st["code"] == "DO_NOT_USE" and "28 days" in st["why"]

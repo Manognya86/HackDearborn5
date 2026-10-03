@@ -158,7 +158,7 @@ CREATE OR REPLACE FUNCTION current_conditions()
 RETURNS TABLE (item_id INT, kind TEXT, severity TEXT, message TEXT)
 LANGUAGE sql STABLE AS $$
     WITH last AS (
-        SELECT i.id, i.nickname, p.model, u.geom, t.bucket, t.avg_temp, t.zone, t.used
+        SELECT i.id, i.nickname, i.opened_at, i.expires_on, p.model, u.geom, t.bucket, t.avg_temp, t.zone, t.used
         FROM items i
         JOIN products p ON p.id = i.product_id
         JOIN users u ON u.id = i.user_id
@@ -189,6 +189,24 @@ LANGUAGE sql STABLE AS $$
            l.nickname || ' is inside ' || o.name || '. Power expected back around '
            || to_char(o.est_restore_at AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '.'
     FROM last l JOIN outages o ON o.active AND ST_Contains(o.area, l.geom)
+    UNION ALL
+    SELECT id, 'expired', 'critical',
+           nickname || ' passed its expiration date (' || to_char(expires_on, 'FMMon FMDD, YYYY') || ').'
+    FROM last WHERE expires_on IS NOT NULL AND expires_on < current_date
+    UNION ALL
+    SELECT id, 'in_use_over', 'critical',
+           nickname || ' was opened ' || (current_date - opened_at::date) || ' days ago; the label allows '
+           || round((model->>'in_use_days')::numeric) || ' days after opening.'
+    FROM last WHERE opened_at IS NOT NULL AND coalesce((model->>'in_use_days')::numeric, 0) > 0
+      AND opened_at + make_interval(days => round((model->>'in_use_days')::numeric)::int) < now()
+    UNION ALL
+    SELECT id, 'in_use_ending', 'warning',
+           nickname || ' must be used by '
+           || to_char(opened_at + make_interval(days => round((model->>'in_use_days')::numeric)::int), 'FMMon FMDD')
+           || ' (' || round((model->>'in_use_days')::numeric) || ' days after opening).'
+    FROM last WHERE opened_at IS NOT NULL AND coalesce((model->>'in_use_days')::numeric, 0) > 0
+      AND opened_at + make_interval(days => round((model->>'in_use_days')::numeric)::int)
+          BETWEEN now() AND now() + INTERVAL '3 days'
 $$;
 
 -- Scheduled by add_job every minute: opens new alerts, refreshes messages, resolves cleared ones.

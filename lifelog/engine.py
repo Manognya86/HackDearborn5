@@ -221,8 +221,34 @@ STATUS_TEXT = {
 }
 
 
-def status_of(state: dict, worst_case: float, zone: str) -> dict:
+def dates_info(opened_at, expires_on, in_use_days, now) -> dict:
+    """Calendar limits that apply regardless of temperature: the printed expiry date and the label's
+    in-use period after opening ("discard 28 days after opening")."""
+    out = {"opened_at": opened_at, "expires_on": expires_on, "in_use_days": in_use_days or 0,
+           "in_use_until": None, "use_by": None, "use_by_reason": None, "expired": False, "in_use_over": False}
+    limits = []
+    if expires_on is not None:
+        exp = datetime.combine(expires_on, datetime.min.time(), tzinfo=now.tzinfo) + timedelta(days=1)
+        out["expired"] = exp <= now
+        limits.append((exp, "expiration date", expires_on.isoformat()))
+    if opened_at is not None and (in_use_days or 0) > 0:
+        until = opened_at + timedelta(days=round(in_use_days))
+        out["in_use_until"] = until
+        out["in_use_over"] = until <= now
+        limits.append((until, f"{round(in_use_days)} days after opening", until.date().isoformat()))
+    if limits:
+        out["use_by"], out["use_by_reason"], out["use_by_date"] = min(limits, key=lambda x: x[0])
+        out["days_left"] = (out["use_by"] - now).total_seconds() / 86400
+    return out
+
+
+def status_of(state: dict, worst_case: float, zone: str, dates: dict | None = None) -> dict:
     """Rule-based traffic light that needs no AI: what a person should do, in one line."""
+    if dates and dates.get("expired"):
+        return {"code": "DO_NOT_USE", "label": STATUS_TEXT["DO_NOT_USE"], "why": "It is past its printed expiration date."}
+    if dates and dates.get("in_use_over"):
+        return {"code": "DO_NOT_USE", "label": STATUS_TEXT["DO_NOT_USE"],
+                "why": f"Its in-use period is over: the label allows {round(dates['in_use_days'])} days after opening."}
     r = state["remaining"]
     silent_h = (state.get("stale_minutes") or 0) / 60
     if zone == "Frozen" or r <= 0:

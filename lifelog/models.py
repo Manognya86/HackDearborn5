@@ -25,6 +25,8 @@ class StabilityModel(BaseModel):
         description="Hours tolerated above the highest labeled limit. If the label gives no number use 8")
     above_limit_is_assumption: bool = Field(description="True if above_limit_budget_hours was not on the label")
     above_limit_quote: str
+    in_use_days: float = Field(description="Days the medicine may be used after first opening or first use, regardless of "
+                                           "temperature (e.g. 'discard 28 days after opening'). 0 if the label gives none")
     visual_checks: list[str] = Field(description="Visual signs the label says mean do not use (cloudy, particles ...)")
     discard_rules: list[str] = Field(description="Other discard rules, e.g. 'discard 28 days after opening'")
     notes: str
