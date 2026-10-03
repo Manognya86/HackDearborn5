@@ -2,8 +2,9 @@
 import json
 from datetime import datetime
 
+import httpx
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 from . import config
 from .models import StabilityModel, TripPlan, Verdict, VisualCheck, VoiceReport
@@ -20,12 +21,33 @@ def client() -> genai.Client:
     if not config.GEMINI_API_KEY:
         raise GeminiUnavailable("GEMINI_API_KEY is not set in .env")
     if _client is None:
-        _client = genai.Client(api_key=config.GEMINI_API_KEY)
+        _client = genai.Client(api_key=config.GEMINI_API_KEY,
+                               http_options=types.HttpOptions(timeout=int(config.GEMINI_TIMEOUT_S * 1000)))
     return _client
 
 
+NOT_NEEDED = "Budgets, late-data repair, alerts, outage ranking and Under the hood don't need Gemini and keep working."
+
+
+def generate(**kwargs):
+    """Every Gemini call goes through here: timeouts, rate limits and API errors become
+    GeminiUnavailable (HTTP 503 with a readable message) instead of a hung button or a 500."""
+    try:
+        return client().models.generate_content(**kwargs)
+    except GeminiUnavailable:
+        raise
+    except (httpx.TimeoutException, TimeoutError) as e:
+        raise GeminiUnavailable(f"Gemini didn't answer within {config.GEMINI_TIMEOUT_S:.0f} s. Try again. {NOT_NEEDED}") from e
+    except errors.APIError as e:
+        if e.code == 429:
+            raise GeminiUnavailable(f"Gemini is rate-limited right now; try again in a minute. {NOT_NEEDED}") from e
+        raise GeminiUnavailable(f"Gemini returned an error ({e.code}). {NOT_NEEDED}") from e
+    except httpx.HTTPError as e:
+        raise GeminiUnavailable(f"Couldn't reach Gemini ({type(e).__name__}). {NOT_NEEDED}") from e
+
+
 def _structured(contents, schema, system: str, temperature: float = 0.2):
-    resp = client().models.generate_content(
+    resp = generate(
         model=config.GEMINI_MODEL,
         contents=contents,
         config=types.GenerateContentConfig(
@@ -41,7 +63,7 @@ def _structured(contents, schema, system: str, temperature: float = 0.2):
 
 
 def _text(contents, system: str, tools=None, temperature: float = 0.4) -> str:
-    resp = client().models.generate_content(
+    resp = generate(
         model=config.GEMINI_MODEL,
         contents=contents,
         config=types.GenerateContentConfig(system_instruction=system, tools=tools, temperature=temperature),
@@ -98,7 +120,7 @@ def search_label(name: str) -> dict:
     system = ("Find the official FDA prescribing information for the medication (prefer dailymed.nlm.nih.gov, "
               "accessdata.fda.gov or the manufacturer). Copy the storage and handling section VERBATIM, then on the last "
               "line write SOURCE: <url>. If you cannot find an official source, say NOT FOUND.")
-    resp = client().models.generate_content(
+    resp = generate(
         model=config.GEMINI_MODEL,
         contents=f"Medication: {name}",
         config=types.GenerateContentConfig(

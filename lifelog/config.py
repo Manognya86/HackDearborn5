@@ -9,6 +9,8 @@ load_dotenv(ROOT / ".env")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+# Per-request Gemini timeout: a slow or rate-limited Gemini fails fast with a clear message
+GEMINI_TIMEOUT_S = float(os.getenv("GEMINI_TIMEOUT_S", "30"))
 
 # Continuous-aggregate policy window. Late data older than this is NOT picked up by the
 # background policy -- the ingest API does a targeted refresh instead.

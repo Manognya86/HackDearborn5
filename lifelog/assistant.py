@@ -73,7 +73,7 @@ def ask(question: str, history: list[dict] | None = None, lang: str | None = Non
     for turn in (history or [])[-8:]:
         contents.append(types.Content(role=turn["role"], parts=[types.Part(text=turn["text"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=question)]))
-    resp = gem.client().models.generate_content(
+    resp = gem.generate(
         model=config.GEMINI_MODEL, contents=contents,
         config=types.GenerateContentConfig(system_instruction=SYSTEM + gem._lang(lang), tools=TOOLS, temperature=0.2),
     )
