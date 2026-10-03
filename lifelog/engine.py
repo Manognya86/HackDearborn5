@@ -63,13 +63,14 @@ FRIDGE_TAU_H = 6.0  # closed fridge without power: e-folding time toward room te
 
 
 def outage_hours_left(remaining: float, current_t: float | None, indoor_t: float, m: dict,
-                      horizon_h: float = 72) -> float | None:
+                      horizon_h: float = 72, tau_h: float | None = None) -> float | None:
     """Hours until the budget is exhausted during an outage. Items currently colder than the room
-    (in a fridge) warm toward indoor temperature by Newton cooling; others sit at indoor temp."""
+    (in a fridge) warm toward indoor temperature by Newton cooling; others sit at indoor temp.
+    tau_h: warming time constant measured from live readings (observed_tau); default FRIDGE_TAU_H."""
     if remaining <= 0:
         return 0.0
     cur = indoor_t if current_t is None else current_t
-    tau = FRIDGE_TAU_H if cur < indoor_t - 5 else 1e-9
+    tau = (tau_h or FRIDGE_TAU_H) if cur < indoor_t - 5 else 1e-9
     t, step = 0.0, 5 / 60
     while t < horizon_h:
         temp = indoor_t - (indoor_t - cur) * math.exp(-t / tau)
@@ -78,6 +79,75 @@ def outage_hours_left(remaining: float, current_t: float | None, indoor_t: float
         if remaining <= 0:
             return t
     return None
+
+
+# ------------------------------------------------------------------ live trend forecast
+TREND_MIN_SLOPE = 0.5    # °C/h: below this the temperature is treated as steady
+TREND_MIN_R2 = 0.6       # fit quality needed before acting on a trend
+TREND_MIN_BUCKETS = 4    # 5-minute buckets (20 min of data)
+LINEAR_CAP_H = 1.0       # without a known ambient, extrapolate the trend for one hour, then hold
+ROOM_C = 22.0            # where a fridge warms toward when its door is open / power is out (assumption)
+
+
+def is_trending(slope: float | None, r2: float | None, n: int | None) -> bool:
+    return (slope is not None and (n or 0) >= TREND_MIN_BUCKETS and abs(slope) >= TREND_MIN_SLOPE
+            and (r2 or 0) >= TREND_MIN_R2)
+
+
+def observed_tau(current_t: float | None, slope: float | None, r2: float | None, n: int | None,
+                 ambient_t: float) -> float | None:
+    """Newton warming time constant implied by the live trend: dT/dt = (ambient - T) / tau."""
+    if current_t is None or not is_trending(slope, r2, n) or slope <= 0 or ambient_t - current_t < 1:
+        return None
+    return min(48.0, max(0.25, (ambient_t - current_t) / slope))
+
+
+def trend_forecast(remaining: float, current_t: float | None, slope: float | None, r2: float | None,
+                   n: int | None, m: dict, ambient_t: float | None = None, horizon_h: float = 72) -> dict:
+    """Forecast from the live trend. Temperature path: Newton approach to ambient_t when the item is
+    warming toward a known ambient; otherwise the linear trend for LINEAR_CAP_H, then flat. The budget
+    is spent along that path with the same step_burn as everything else."""
+    if current_t is None:
+        return {"trend": "unknown", "slope_c_per_h": None, "r2": r2, "buckets": n or 0, "model": None,
+                "minutes_to_limit": None, "minutes_to_freeze": None, "hours_left": None, "path": []}
+    hi, freeze_c = m["target_max_c"], m.get("freeze_c", 0.0)
+    if not is_trending(slope, r2, n):
+        kind, model, temp_at = "steady", "constant", (lambda h: current_t)
+    else:
+        kind = "warming" if slope > 0 else "cooling"
+        tau = observed_tau(current_t, slope, r2, n, ambient_t) if ambient_t is not None else None
+        if tau:
+            model = f"newton toward {ambient_t:.0f}°C (tau {tau:.1f} h)"
+            temp_at = lambda h: ambient_t - (ambient_t - current_t) * math.exp(-h / tau)  # noqa: E731
+        else:
+            model = f"linear for {LINEAR_CAP_H:.0f} h, then flat"
+            temp_at = lambda h: current_t + slope * min(h, LINEAR_CAP_H)  # noqa: E731
+    out = {"trend": kind, "slope_c_per_h": slope, "r2": r2, "buckets": n or 0, "model": model,
+           "minutes_to_limit": None, "minutes_to_freeze": None, "hours_left": None, "path": []}
+    if kind == "steady":  # constant temperature: closed form, identical to hours_left()
+        out["hours_left"] = hours_left(remaining, current_t, m)
+        out["path"] = [{"minutes": k * 10, "temp_c": current_t,
+                        "remaining": max(0.0, remaining - step_burn(current_t, m, k / 6))} for k in range(13)]
+        return out
+    step, h, rem = 1 / 60, 0.0, remaining
+    while h < horizon_h:
+        t = temp_at(h + step)
+        if out["minutes_to_limit"] is None and current_t <= hi < t:
+            out["minutes_to_limit"] = round((h + step) * 60)
+        if out["minutes_to_freeze"] is None and m.get("freeze_discard") and current_t > freeze_c >= t:
+            out["minutes_to_freeze"] = round((h + step) * 60)
+        rem -= step_burn(t, m, step)
+        h += step
+        if round(h * 60) % 10 == 0 and h <= 2 + 1e-9:
+            out["path"].append({"minutes": round(h * 60), "temp_c": round(t, 2), "remaining": max(0.0, rem)})
+        if rem <= 0:
+            out["hours_left"] = h
+            break
+    else:  # still alive at the horizon: the path has levelled off, finish at its final temperature
+        tail = hours_left(rem, temp_at(horizon_h), m)
+        out["hours_left"] = None if tail is None else horizon_h + tail
+    out["path"].insert(0,{"minutes": 0, "temp_c": current_t, "remaining": remaining})
+    return out
 
 
 def project(remaining: float, temps: list[float], m: dict, step_h: float) -> list[float]:

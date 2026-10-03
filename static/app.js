@@ -6,6 +6,15 @@ const md = (s) => marked.parse(String(s ?? "").replace(/</g, "&lt;"));
 const pct = (x, d = 0) => (x == null ? "–" : `${(x * 100).toFixed(d)}%`);
 const hrs = (h) => (h == null ? "no limit" : h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : h >= 48 ? `${(h / 24).toFixed(1)} days` : `${h.toFixed(1)} h`);
 const temp = (t) => (t == null ? "–" : `${(+t).toFixed(1)}°C`);
+// live trend (regression over the last 30 min of the real-time rollup) in one phrase
+const trendText = (f) => {
+  if (!f || f.trend === "unknown") return "";
+  if (f.trend === "steady") return "steady";
+  const arrow = f.trend === "warming" ? "↑" : "↓";
+  const eta = f.minutes_to_limit != null ? ` · leaves its range in ~${hrs(f.minutes_to_limit / 60)}`
+    : f.minutes_to_freeze != null ? ` · freezes in ~${hrs(f.minutes_to_freeze / 60)}` : "";
+  return `${arrow} ${Math.abs(f.slope_c_per_h).toFixed(1)}°C/h${eta}`;
+};
 const fmt = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -106,6 +115,7 @@ async function loadItems() {
       ${ring(i.remaining, 56, 6, i.status.code)}
       <div><div class="name">${esc(i.nickname)}</div>
         <div class="sub">${i.stale_minutes > 20 ? `last ${temp(i.current_temp)} · sensor quiet ${hrs(i.stale_minutes / 60)}` : `${temp(i.current_temp)} · ${esc(i.zone.toLowerCase())}`}</div>
+        ${i.forecast && ["warming", "cooling"].includes(i.forecast.trend) ? `<div class="sub trend ${i.forecast.minutes_to_limit != null || i.forecast.minutes_to_freeze != null ? "bad" : ""}">${esc(trendText(i.forecast))}</div>` : ""}
         <span class="pill ${i.status.code}">${esc(i.status.label)}</span></div>
     </button>`).join("") || `<div class="card"><p>No medicines yet.</p><p class="muted">Add one from its label, or open Demo controls and press Reset.</p></div>`;
   $$(".med").forEach((el) => el.addEventListener("click", () => { openItem(+el.dataset.id); }));
@@ -145,6 +155,9 @@ async function openItem(id, { quiet = false } = {}) {
             <span>${s.stale_minutes > 20 ? "Last reading" : "Now"} <b>${temp(s.current_temp)}</b></span>
             <span>Allowed <b>${m.target_min_c}–${m.target_max_c}°C</b></span>
             <span>At this temperature it lasts <b>${hrs(s.hours_left)}</b></span>
+            ${d.forecast && d.forecast.trend !== "unknown" ? `<span>Trend <b class="trend ${d.forecast.minutes_to_limit != null || d.forecast.minutes_to_freeze != null ? "bad" : ""}">${esc(trendText(d.forecast))}</b></span>` : ""}
+            ${d.forecast && ["warming", "cooling"].includes(d.forecast.trend) ? `<span>At this trend it lasts <b>${hrs(d.forecast.hours_left)}</b></span>` : ""}
+            <span>Used in the last hour <b>${d.burn_last_hour > 0.00005 ? pct(d.burn_last_hour, 2) : "none"}</b></span>
             ${d.dates.use_by ? `<span>Use by <b>${new Date(d.dates.use_by_date + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</b> <span class="muted">(${esc(d.dates.use_by_reason)})</span></span>` : ""}
             <button class="btn" id="dates-btn" style="min-height:30px;padding:3px 10px;font-size:13px">Dates &amp; lot</button>
           </div>
@@ -178,7 +191,7 @@ async function openItem(id, { quiet = false } = {}) {
       <details class="fold" data-k="chart" ${openFolds.includes("chart") || !isMobile() ? "open" : ""}>
         <summary>Last 3 days <span class="muted">temperature and life budget</span></summary>
         <div class="chart-box"><canvas id="chart" aria-label="Temperature and life budget over time"></canvas></div>
-        <p class="legend-note">The <b style="color:var(--chart-temp)">green line</b> is the temperature; the dashed line is the label's maximum. The <b style="color:var(--chart-budget)">purple line</b> is the life budget: it only goes down, and only while it's outside the label's range.</p>
+        <p class="legend-note">The <b style="color:var(--chart-temp)">green line</b> is the temperature, and its dotted end is the live forecast for the next 2 hours${d.forecast?.model ? ` (${esc(d.forecast.model)}, from the last 30 minutes of readings)` : ""}; the dashed line is the label's maximum. The <b style="color:var(--chart-budget)">purple line</b> is the life budget: it only goes down, and only while it's outside the label's range.</p>
       </details>
       <details class="fold" data-k="burn" ${openFolds.includes("burn") ? "open" : ""}>
         <summary>What used the budget <span class="muted">${d.burners.length ? `${d.burners.length} episode${d.burners.length === 1 ? "" : "s"}` : "nothing yet"}</span></summary>
@@ -340,6 +353,11 @@ function drawChart(d) {
   chart?.destroy();
   const ct = cssVar("--chart-temp"), cb = cssVar("--chart-budget"), muted = cssVar("--muted"), border = cssVar("--border");
   const m = d.item.model, pts = d.timeline;
+  // forecast starts at the last reading; hidden while the sensor is quiet (no live trend)
+  const fresh = d.state.stale_minutes != null && d.state.stale_minutes <= 20;
+  const fc = fresh && pts.length ? (d.forecast?.path || []) : [];
+  const t0 = pts.length ? new Date(pts.at(-1).t).getTime() : Date.now();
+  const fcEnd = fc.length ? t0 + fc.at(-1).minutes * 60e3 : (pts.length ? new Date(pts.at(-1).t).getTime() : Date.now());
   const withGaps = (key, scale = 1) => {
     const out = [];
     pts.forEach((p, i) => {
@@ -353,8 +371,10 @@ function drawChart(d) {
     data: { datasets: [
       { label: "Temperature °C", data: withGaps("temp"), borderColor: ct, borderWidth: 1.5, pointRadius: 0, yAxisID: "t", spanGaps: false },
       { label: "Life budget %", data: withGaps("remaining", 100), borderColor: cb, borderWidth: 2.5, pointRadius: 0, yAxisID: "b", spanGaps: false },
-      { label: `Label max ${m.target_max_c}°C`, data: pts.length ? [{ x: new Date(pts[0].t), y: m.target_max_c }, { x: new Date(pts.at(-1).t), y: m.target_max_c }] : [],
+      { label: `Label max ${m.target_max_c}°C`, data: pts.length ? [{ x: new Date(pts[0].t), y: m.target_max_c }, { x: new Date(fcEnd), y: m.target_max_c }] : [],
         borderColor: muted, borderDash: [5, 5], borderWidth: 1, pointRadius: 0, yAxisID: "t" },
+      { label: "Forecast °C (next 2 h)", data: fc.map((p) => ({ x: new Date(t0 + p.minutes * 60e3), y: p.temp_c })),
+        borderColor: ct, borderDash: [2, 3], borderWidth: 2, pointRadius: 0, yAxisID: "t" },
     ] },
     options: {
       maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
@@ -489,7 +509,7 @@ loaders.rescue = async () => {
     <div class="banner bad"><b>${esc(out?.name || "Power outage")}</b>: power back in about ${hrs(r.people[0].hours_to_restore)}, homes around ${temp(out?.indoor_temp_c)}. <b>${atRisk.length}</b> medicine${atRisk.length === 1 ? "" : "s"} will run out first.</div>
     <div class="table-wrap"><table><tr><th>Person</th><th>Medicine</th><th class="num">Lasts</th><th>Go to</th></tr>
     ${r.people.map((p) => `<tr class="${p.at_risk ? "risk" : ""}"><td>${esc(p.name)}</td><td>${esc(p.medicine)}<div class="muted small">${pct(p.remaining)} budget</div></td>
-      <td class="num">${hrs(p.hours_left)}</td><td>${p.refuges[0] ? `${esc(p.refuges[0].name)}<div class="muted small">${p.refuges[0].miles} mi</div>` : "–"}</td></tr>`).join("")}</table></div>`;
+      <td class="num">${hrs(p.hours_left)}<div class="muted small">${esc(p.warming_model || "")}</div></td><td>${p.refuges[0] ? `${esc(p.refuges[0].name)}<div class="muted small">${p.refuges[0].miles} mi</div>` : "–"}</td></tr>`).join("")}</table></div>`;
 };
 $("#plan-btn").addEventListener("click", (e) => busy(e.currentTarget, async () => {
   const r = await post(withLang("/api/rescue/plan"));
@@ -716,7 +736,7 @@ async function simAction(action) {
 $("#sim-btn").addEventListener("click", (e) => busy(e.currentTarget, () => simAction(simRunning ? "stop" : "start")));
 
 // ------------------------------------------------------------------ real time (Server-Sent Events from Postgres NOTIFY)
-let es = null, refreshTimer = null;
+let es = null, refreshTimer = null, viewTimer = null;
 function connectLive() {
   es?.close();
   es = new EventSource("/api/stream");
@@ -728,6 +748,13 @@ function connectLive() {
       await loadItems();
       if (currentItem && $("#view-meds").classList.contains("detail-open")) openItem(currentItem, { quiet: true });
     }, 400);
+    // views whose numbers move with every reading
+    clearTimeout(viewTimer);
+    viewTimer = setTimeout(() => {
+      if (document.hidden) return;
+      if (currentView === "rescue") loaders.rescue();
+      if (currentView === "demo") loadCompare();
+    }, 1500);
   });
   es.addEventListener("alert", (e) => {
     const a = JSON.parse(e.data);

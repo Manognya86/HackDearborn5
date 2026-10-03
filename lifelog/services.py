@@ -25,7 +25,33 @@ def list_items(user_id: int | None = None) -> list[dict]:
         r["worst_case"] = engine.gap_worst_case(r["remaining"], gap, r["model"])
         r["dates"] = engine.dates_info(r["opened_at"], r["expires_on"], r["model"].get("in_use_days"), now())
         r["status"] = engine.status_of(r, r["worst_case"], r["zone"], r["dates"])
+        r["forecast"] = live_forecast(r["id"], r["model"], r, r["user_id"])
+        r["forecast"].pop("path", None)
     return rows
+
+
+def item_trend(item_id: int) -> dict:
+    return db.one("SELECT * FROM item_trend(%s)", (item_id,)) or {}
+
+
+def outage_for(user_id: int) -> dict | None:
+    return db.one("""SELECT o.id, o.indoor_temp_c, o.est_restore_at FROM outages o JOIN users u ON ST_Contains(o.area, u.geom)
+                     WHERE o.active AND u.id = %s LIMIT 1""", (user_id,))
+
+
+def live_forecast(item_id: int, model: dict, state: dict, user_id: int) -> dict:
+    """Trend forecast from the real-time aggregate. A fridge medicine warms toward the room (or toward the
+    outage's indoor temperature when the power is out); for anything else the ambient is unknown."""
+    tr = item_trend(item_id)
+    out = outage_for(user_id)
+    ambient = out["indoor_temp_c"] if out else (engine.ROOM_C if model["target_max_c"] <= 10 else None)
+    if state.get("stale_minutes") and state["stale_minutes"] > 20:  # silent sensor: no live trend
+        tr = {**tr, "slope_c_per_h": None}
+    f = engine.trend_forecast(state["remaining"], state["current_temp"], tr.get("slope_c_per_h"), tr.get("r2"),
+                              tr.get("n"), model, ambient)
+    f["ambient_c"] = ambient
+    f["ambient_source"] = "outage indoor temperature" if out else "room temperature (assumed)" if ambient else None
+    return f
 
 
 def summary(item_id: int, model: dict, raw: bool = False) -> dict:
@@ -72,6 +98,9 @@ def item_detail(item_id: int, raw: bool = False) -> dict | None:
     worst = engine.gap_worst_case(state["remaining"], gaps, m)
     whatif = engine.whatif(state["remaining"], cur, m)
     alerts_open = db.query("SELECT * FROM alerts WHERE item_id = %s AND resolved_at IS NULL", (item_id,))
+    forecast = live_forecast(item_id, m, state, item["user_id"])
+    hour_ago = now() - timedelta(hours=1)
+    burn_last_hour = sum(r["burn"] for r in timeline if r["bucket"] >= hour_ago)
     dates = engine.dates_info(item["opened_at"], item["expires_on"], m.get("in_use_days"), now())
     status = engine.status_of(state, worst, state["zone"], dates)
     return {
@@ -86,6 +115,8 @@ def item_detail(item_id: int, raw: bool = False) -> dict | None:
         "burners": burners[:8],
         "gaps": gaps,
         "whatif": whatif,
+        "forecast": forecast,
+        "burn_last_hour": burn_last_hour,
         "worst_case": worst,
         "status": status,
         "precautions": precautions(item, state, gaps, whatif),
@@ -197,12 +228,17 @@ def rescue() -> dict:
     for r in rows:
         s = summary(r["item_id"], r["model"])
         hrs_restore = max(0.0, (r["est_restore_at"] - t).total_seconds() / 3600)
-        hl = engine.outage_hours_left(s["remaining"], s["current_temp"], r["indoor_temp_c"], r["model"])
+        tr = item_trend(r["item_id"])
+        tau = engine.observed_tau(s["current_temp"], tr.get("slope_c_per_h"), tr.get("r2"), tr.get("n"), r["indoor_temp_c"])
+        hl = engine.outage_hours_left(s["remaining"], s["current_temp"], r["indoor_temp_c"], r["model"], tau_h=tau)
         people.append({
             "user_id": r["user_id"], "name": r["name"], "lat": r["lat"], "lon": r["lon"],
             "item_id": r["item_id"], "medicine": r["nickname"], "product": r["product_name"],
             "remaining": s["remaining"], "current_temp": s["current_temp"],
             "hours_left": hl, "hours_to_restore": hrs_restore,
+            "warming_c_per_h": tr.get("slope_c_per_h"),
+            "warming_model": f"measured: tau {tau:.1f} h" if tau else f"assumed: tau {engine.FRIDGE_TAU_H:.0f} h"
+                             if s["current_temp"] is not None and s["current_temp"] < r["indoor_temp_c"] - 5 else "at room temperature",
             "at_risk": hl is not None and hl < hrs_restore,
             "refuges": r["refuges"] or [], "outage": r["outage"],
         })
