@@ -70,6 +70,7 @@ async function loadItems() {
 loaders.meds = () => loadItems().then(() => currentItem && openItem(currentItem));
 
 async function openItem(id) {
+  const keepAi = id === currentItem ? $("#ai-box")?.innerHTML : "";
   currentItem = id;
   $$(".med").forEach((el) => el.classList.toggle("active", +el.dataset.id === id));
   const d = await api(`/api/items/${id}`);
@@ -87,6 +88,7 @@ async function openItem(id) {
     </div>
     ${ongoingGap ? `<div class="banner warn">Sensor silent for ${hrs(ongoingGap.hours)}. The budget below can't account for that time until the data arrives.</div>` : ""}
     ${s.remaining <= 0 ? `<div class="banner bad">Life budget exhausted.</div>` : ""}
+    ${d.alerts.filter((a) => a.kind !== "sensor_silent").map((a) => `<div class="banner ${a.severity === "critical" ? "bad" : "warn"}">${esc(a.message)}</div>`).join("")}
     <div class="stats">
       <div class="stat"><div class="v">${pct(s.remaining)}</div><div class="k">life budget left</div></div>
       <div class="stat"><div class="v">${hrs(s.hours_left)}</div><div class="k">left at current temp</div></div>
@@ -103,6 +105,17 @@ async function openItem(id) {
         <div><div class="burn-bar" style="width:${(b.burn / maxBurn) * 100}%"></div></div>
         <div class="num">-${(b.burn * 100).toFixed(1)}%</div>
       </div>`).join("") : `<p class="muted">Nothing yet. Stored within labeled conditions.</p>`}
+
+    <h3>Exposure statistics <span class="muted small">since tracking started</span></h3>
+    <div class="kv">
+      <div class="stat"><div class="v">${temp(d.stats.mkt_c)}</div><div class="k">mean kinetic temperature (USP &lt;1079&gt;)${d.stats.mkt_c > m.target_max_c ? " · <b>above labeled max</b>" : ""}</div></div>
+      <div class="stat"><div class="v">${temp(d.stats.time_weighted_avg_c)}</div><div class="k">time-weighted average (Toolkit hyperfunction)</div></div>
+      <div class="stat"><div class="v">${temp(d.stats.min_c)} / ${temp(d.stats.max_c)}</div><div class="k">min / max</div></div>
+      <div class="stat"><div class="v">${d.stats.hours == null ? "–" : (+d.stats.hours).toFixed(0) + " h"}</div><div class="k">hours with data</div></div>
+    </div>
+    <table><tr><th>Zone</th><th class="num">Time</th><th class="num">Budget used</th></tr>
+    ${d.zones.map((z) => `<tr><td>${esc(z.zone)}</td><td class="num">${hrs(z.minutes / 60)}</td><td class="num">${z.burn > 0.0005 ? pct(z.burn) : "–"}</td></tr>`).join("")}</table>
+    <p class="muted small">Mean kinetic temperature weights hot periods more heavily than a plain average (activation energy 83.144 kJ/mol), so it reflects cumulative heat stress.</p>
 
     <h3>What if you act now? <span class="muted small">budget left after 12 h</span></h3>
     <table><tr><th>Action</th><th class="num">Temp</th><th class="num">Left after 12 h</th><th class="num">Saved vs now</th><th class="num">Lasts</th></tr>
@@ -122,6 +135,7 @@ async function openItem(id) {
     <p class="muted small">Above highest labeled limit: ${m.above_limit_budget_hours} h budget, doubling per 10°C${m.above_limit_is_assumption ? " (LIFELOG assumption, not on label)" : ""}.</p>`;
 
   drawChart(d);
+  if (keepAi) $("#ai-box").innerHTML = keepAi;
   $("#advice-btn").onclick = (e) => busy(e.target, async () => renderVerdict(await post(`/api/items/${id}/advice`)));
   $("#photo-btn").onclick = (e) => { e.preventDefault(); $("#photo").click(); };
   $("#photo").onchange = async (e) => {
@@ -363,6 +377,93 @@ async function loadCompare() {
 }
 loaders.demo = loadCompare;
 
+// ------------------------------------------------------------------ alerts
+const SEV = { critical: "Critical", warning: "Warning" };
+async function refreshBadge() {
+  try {
+    const a = await api("/api/alerts?mine=true");
+    const n = a.filter((x) => !x.acked).length;
+    $("#alert-count").hidden = !n; $("#alert-count").textContent = n;
+  } catch { /* api offline */ }
+}
+loaders.alerts = async () => {
+  const all = $("#alerts-all").checked;
+  const a = await api(`/api/alerts?mine=${!all}&include_resolved=true`);
+  $("#alerts-list").innerHTML = a.map((x) => `
+    <div class="alert ${x.resolved_at ? "resolved" : esc(x.severity)}">
+      <div class="sev">${x.resolved_at ? "Resolved" : SEV[x.severity] || esc(x.severity)}</div>
+      <div style="flex:1">${esc(x.message)}<div class="muted small">${all ? esc(x.user_name) + " · " : ""}${fmt(x.created_at)}${x.resolved_at ? " → " + fmt(x.resolved_at) : ""}</div></div>
+      ${!x.resolved_at && !x.acked && x.is_me ? `<button data-ack="${x.id}">Acknowledge</button>` : ""}
+    </div>`).join("") || `<p class="muted">No alerts.</p>`;
+  $$("[data-ack]").forEach((b) => b.addEventListener("click", async () => { await post(`/api/alerts/${b.dataset.ack}/ack`); loaders.alerts(); refreshBadge(); }));
+};
+$("#alerts-all").addEventListener("change", () => loaders.alerts());
+$("#alerts-check").addEventListener("click", (e) => busy(e.target, async () => { await post("/api/alerts/check"); await loaders.alerts(); refreshBadge(); }));
+
+// ------------------------------------------------------------------ ask LIFELOG
+const history = [];
+function addMsg(role, html) {
+  const el = document.createElement("div"); el.className = `msg ${role}`; el.innerHTML = html;
+  $("#chat").appendChild(el); $("#chat").scrollTop = $("#chat").scrollHeight; return el;
+}
+async function askLifelog(q) {
+  if (!q.trim()) return;
+  addMsg("user", esc(q)); $("#ask-input").value = "";
+  const pending = addMsg("model", `<span class="spin muted">Thinking</span>`);
+  try {
+    const r = await post("/api/ask", { question: q, history });
+    history.push({ role: "user", text: q }, { role: "model", text: r.answer });
+    pending.innerHTML = md(r.answer) + (r.tool_calls.length ? `<div class="tools">called: ${r.tool_calls.map((c) => `${esc(c.name)}(${esc(Object.values(c.args).join(", "))})`).join(" · ")}</div>` : "");
+  } catch (e) { pending.innerHTML = `<span class="muted">${esc(e.message)}</span>`; }
+}
+$("#ask-form").addEventListener("submit", (e) => { e.preventDefault(); askLifelog($("#ask-input").value); });
+$$("[data-q]").forEach((b) => b.addEventListener("click", () => askLifelog(b.dataset.q)));
+
+// ------------------------------------------------------------------ under the hood
+const bytes = (b) => (b == null ? "–" : b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${(b / 1024).toFixed(0)} kB`);
+loaders.tiger = async () => {
+  const t = await api("/api/tiger");
+  const c = t.compression || {};
+  const ratio = c.before_compression_total_bytes && c.after_compression_total_bytes ? (c.before_compression_total_bytes / c.after_compression_total_bytes).toFixed(1) : null;
+  const b = t.benchmark_ms;
+  $("#tiger-body").innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="v">${ratio ? ratio + "×" : "–"}</div><div class="k">compression on old readings (${bytes(c.before_compression_total_bytes)} → ${bytes(c.after_compression_total_bytes)})</div></div>
+      <div class="stat"><div class="v">${b.continuous_aggregate} ms</div><div class="k">all budgets from the continuous aggregate</div></div>
+      <div class="stat"><div class="v">${b.raw_readings} ms</div><div class="k">same, recomputed from raw readings</div></div>
+      <div class="stat"><div class="v small">${t.watermark ? fmt(t.watermark) : "–"}</div><div class="k">aggregate watermark</div></div>
+    </div>
+    <h3>Hypertables</h3>
+    <table><tr><th>Table</th><th class="num">Rows (approx.)</th><th class="num">Chunks</th><th class="num">Size</th><th>Compression</th></tr>
+    ${t.hypertables.map((h) => `<tr><td><code>${esc(h.name)}</code></td><td class="num">${(+h.rows).toLocaleString()}</td><td class="num">${h.chunks}</td><td class="num">${bytes(h.bytes)}</td><td>${h.compression_enabled ? "enabled" : "–"}</td></tr>`).join("")}</table>
+    <h3>Continuous aggregates</h3>
+    <table><tr><th>View</th><th>Mode</th></tr>${t.caggs.map((v) => `<tr><td><code>${esc(v.view_name)}</code></td><td>${v.materialized_only ? "materialized only" : "real-time (materialized + fresh rows)"}</td></tr>`).join("")}</table>
+    <h3>Scheduled jobs <span class="muted small">run by Tiger inside the database</span></h3>
+    <table><tr><th>Job</th><th>Target</th><th>Every</th><th class="num">Runs</th><th>Last run</th><th>Next</th></tr>
+    ${t.jobs.map((j) => `<tr><td><code>${esc(j.proc_name)}</code></td><td>${esc(j.hypertable_name || "–")}</td><td>${esc(j.every)}</td><td class="num">${j.total_runs ?? "–"}</td>
+      <td>${j.last_run_started_at ? fmt(j.last_run_started_at) + " · " + esc(j.last_run_status || "") : "–"}</td><td>${j.next_start ? fmt(j.next_start) : "–"}</td></tr>`).join("")}</table>
+    <h3>Extensions</h3><p>${t.extensions.map((e) => `<span class="pill on">${esc(e.extname)} ${esc(e.extversion)}</span>`).join(" ")}</p>`;
+};
+$("#tiger-refresh").addEventListener("click", (e) => busy(e.target, loaders.tiger));
+
+// ------------------------------------------------------------------ live sensors
+let simRunning = false;
+async function simAction(action) {
+  const st = await post(`/api/sim/${action}`);
+  simRunning = st.running;
+  $("#sim-btn").textContent = st.running ? "Stop live sensors" : "Start live sensors";
+  $("#sim-status").innerHTML = st.running ? `<span class="live"></span>Streaming a reading per medicine every ${st.tick_seconds} s · ${st.rows} rows so far` : `${st.rows} rows streamed`;
+}
+$("#sim-btn").addEventListener("click", (e) => busy(e.target, () => simAction(simRunning ? "stop" : "start")));
+setInterval(async () => {
+  refreshBadge();
+  if (!simRunning) return;
+  simAction("status");
+  if ($("#view-meds").classList.contains("active")) { await loadItems(); if (currentItem) openItem(currentItem); }
+}, 10000);
+
 // ------------------------------------------------------------------ boot
 health();
+refreshBadge();
+simAction("status").catch(() => {});
 loadItems().catch((e) => { $("#item-list").innerHTML = `<p class="pad muted">${esc(e.message)}. Check .env and run scripts/setup_db.py.</p>`; });

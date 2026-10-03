@@ -5,18 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LIFELOG Home</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
 <header class="top">
   <div class="brand"><span class="dot"></span>LIFELOG <span class="muted">Home</span></div>
   <nav id="nav">
     <button data-view="meds" class="active">My medicines</button>
+    <button data-view="alerts">Alerts <span id="alert-count" class="badge" hidden></span></button>
+    <button data-view="ask">Ask LIFELOG</button>
     <button data-view="add">Add medicine</button>
     <button data-view="voice">Voice report</button>
     <button data-view="rescue">Outage rescue</button>
     <button data-view="trip">Trip check</button>
     <button data-view="porch">Porch heat</button>
+    <button data-view="tiger">Under the hood</button>
     <button data-view="demo">Demo controls</button>
   </nav>
   <div id="health" class="health"></div>
@@ -28,6 +31,45 @@
     <div class="split">
       <aside id="item-list" class="list"></aside>
       <div id="item-detail" class="detail"><p class="muted pad">Select a medicine.</p></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ alerts -->
+  <section id="view-alerts" class="view">
+    <div class="card narrow">
+      <div class="row between">
+        <h2>Alerts <span class="muted small">written every minute by a Tiger Data scheduled job (check_alerts)</span></h2>
+        <div class="row"><label class="small" style="margin:0"><input type="checkbox" id="alerts-all"> Whole neighborhood</label>
+          <button id="alerts-check">Run check now</button></div>
+      </div>
+      <div id="alerts-list"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ ask -->
+  <section id="view-ask" class="view">
+    <div class="card narrow">
+      <h2>Ask LIFELOG</h2>
+      <p class="muted">Gemini answers by calling functions that query your data in Tiger Data. Each answer shows which ones it called.</p>
+      <div id="chat" class="chat"></div>
+      <form id="ask-form" class="row">
+        <input type="text" id="ask-input" placeholder="Is my insulin still OK after last night?" autocomplete="off" style="flex:1">
+        <button class="primary" type="submit">Ask</button>
+      </form>
+      <div class="row small">
+        <button class="chip" data-q="Which of my medicines is in the worst shape, and why?">Worst shape?</button>
+        <button class="chip" data-q="If I leave my EpiPen in the car for 3 more hours at 40C, is it still usable?">EpiPen in car 3 h?</button>
+        <button class="chip" data-q="There's an outage. What should I do with my medicines and where can I go?">Outage plan</button>
+        <button class="chip" data-q="Explain my open alerts in plain language.">Explain alerts</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ tiger -->
+  <section id="view-tiger" class="view">
+    <div class="card narrow">
+      <div class="row between"><h2>Under the hood: Tiger Data</h2><button id="tiger-refresh">Refresh</button></div>
+      <div id="tiger-body"></div>
     </div>
   </section>
 
@@ -117,7 +159,9 @@
         <button id="repair-btn">Repair late windows</button>
         <button data-demo="storm">Summer storm outage</button>
         <button data-demo="clear_storm">Clear outage</button>
+        <button id="sim-btn" class="primary">Start live sensors</button>
       </div>
+      <p id="sim-status" class="muted small"></p>
       <h3>Late-data check: insulin vial</h3>
       <p class="muted">The dashboard reads the continuous aggregate. Rows that arrive older than its watermark stay
         invisible until refreshed. Compare against a recomputation from raw readings.</p>
@@ -133,6 +177,6 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=2"></script>
 </body>
 </html>
