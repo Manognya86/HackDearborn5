@@ -4,7 +4,7 @@ import random
 import threading
 from datetime import datetime, timezone
 
-from . import db
+from . import db, realtime
 
 TICK_S = 5
 _rng = random.Random()
@@ -45,6 +45,7 @@ def _loop(stop: threading.Event) -> None:
                 with cur.copy("COPY readings (ts, item_id, temp_c, source) FROM STDIN") as cp:
                     for r in rows:
                         cp.write_row(r)
+            realtime.alerts_soon()
         _state["ticks"] += 1
         _state["rows"] += len(rows)
         stop.wait(TICK_S)
