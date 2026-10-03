@@ -6,13 +6,45 @@ Temperature-sensitive medicines (insulin, GLP-1 pens, EpiPens, biologics) get ab
 hot cars, power outages, mailboxes in August. LIFELOG turns each medicine's own label into a life-budget
 model (Gemini), tracks every exposure as time-series in Tiger Data, and tells you what's left.
 
+## Why Tiger
+Home sensors don't upload on time. A fridge sensor loses Wi-Fi during the very outage that's warming the insulin,
+then dumps six hours of readings at once. A dashboard built on a pre-computed rollup would keep saying "100%, safe"
+while the raw data says otherwise. LIFELOG's budget is served from a **real-time continuous aggregate**; `/api/ingest`
+compares each batch with the aggregate's **materialization watermark**, and when rows land behind it, refreshes
+**only the affected 5-minute and daily windows**. The demo shows it: the late-data screen draws the watermark, the late
+rows hidden behind it, and the dashboard-vs-raw gap closing after a targeted refresh. Around that, Tiger runs the
+rest inside the database: a hierarchical daily rollup for the 30-day calendar, columnstore compression and retention
+policies, a scheduled `check_alerts` job, `LISTEN/NOTIFY` for live updates, plus PostGIS (outage rescue) and pgvector
+(similar exposure histories) in the same Postgres.
+
+## Tiger Data by the numbers
+`scripts/setup_db.py --scale 50` then `scripts/benchmark.py` on a Tiger Cloud service (4 CPU / 16 GB, us-east-2),
+TimescaleDB 2.30.2, PostgreSQL 18.6. Timings are the median of 3 runs after a warm-up, measured from a laptop in
+Dearborn, so they include the network round trip.
+
+| Metric | Value |
+|---|---|
+| Sensor readings (1-minute) | 6,782,041 across 76 medicines, 89 days |
+| `readings` hypertable | 91 daily chunks, 144.6 MiB on disk |
+| Columnstore (compressed chunks) | 748.7 MiB → 55.9 MiB (**13.4×** smaller) |
+| `readings_5m` / `readings_1d` rollups | 1,400,786 / 4,940 rows |
+
+| Query | Continuous aggregate | Raw readings | Speedup |
+|---|---:|---:|---:|
+| Life budget, every medicine | 4.88 s (1,400,786 rows) | 16.93 s (6,782,041 rows) | **3.5×** |
+| 30-day calendar, every medicine | 82.1 ms (1,890 rows) | 16.30 s (2,455,507 rows) | **198.5×** |
+
+The life-budget query is only 3.5× faster because both paths still run the per-bucket budget math (zones, running
+sum) over 90 days of 5-minute buckets; the calendar reads the daily rollup directly. Generating the 6.5M rows took 38 s
+server-side, refreshing both rollups 38 s, columnstore conversion 7 s. Re-run `scripts/benchmark.py` to refresh these.
+
 ## What's in it
 
 | Feature | Tiger Data | Gemini |
 |---|---|---|
 | Label → stability model | `products.model` JSONB | Reads photo/PDF, structured output with verbatim quotes |
 | Life budget + "what consumed it" | `readings` hypertable → `readings_5m` continuous aggregate → `item_timeline()` / `item_episodes()` SQL (gaps-and-islands) | |
-| Late-arriving sensor data | Watermark detection + targeted `refresh_continuous_aggregate`; raw-vs-aggregate comparison | |
+| Late-arriving sensor data | Watermark detection + targeted `refresh_continuous_aggregate`; raw-vs-aggregate comparison; a strip showing the watermark and where late rows landed | |
 | Similar exposure histories | `pattern_library` + pgvector cosine search | |
 | "Is it safe?" | | Grounded verdict citing label quotes |
 | Voice report | Writes `source='voice'` readings | Audio → exposure events |
@@ -23,8 +55,8 @@ model (Gemini), tracks every exposure as time-series in Tiger Data, and tells yo
 | Porch Heat Index | `weather_hourly` hypertable × `deliveries` | Pharmacy brief |
 | Alerts | `check_alerts` procedure scheduled with `add_job` every minute; opens, updates and resolves alerts | Explains them in Ask LIFELOG |
 | Exposure statistics | Mean Kinetic Temperature in SQL; time-weighted average via Toolkit `time_weight()` | |
-| Storage | Compression policy (segment by item, 11× on old chunks), retention policies | |
-| Under the hood page | Hypertable sizes, compression ratio, job runs, aggregate vs raw timing | |
+| Storage | Columnstore policy (segment by item, order by time; 13.4× on compressed chunks at scale), 400-day retention policies | |
+| Under the hood page | Hypertable sizes, compression ratio, job runs; rollup vs raw timings (median of 3) for every budget and the 30-day calendar | |
 | Live sensors | Streams a reading per medicine every 5 s into the real-time aggregate | |
 | Ask LIFELOG | Tools query Tiger | Function calling over 5 tools, shows which ones it called |
 | Real time | `LISTEN/NOTIFY` triggers on `readings` and `alerts` → Server-Sent Events; alerts re-checked within ~2 s of new data | |
@@ -193,21 +225,23 @@ snapshot; `--to-timestamp 2026-10-04T14:00:00Z` forks from a point in time.
 ```
 
 ## 5-minute demo script
-1. **Demo controls → Reset.** My medicines: three items at 100%. The insulin shows *sensor silent*.
+1. **Demo controls → Reset.** My medicines: four medicines near 100%. The Lantus spare shows *sensor silent*; the Victoza pen must be used within 3 days of its in-use period. (If scale data is loaded for judging, skip Reset: it returns to the small seed.)
 2. **Add medicine:** upload a real label photo. Gemini builds the model with quotes. Track it.
 3. **Demo controls → EpiPen: hot car.** Open the EpiPen: budget drops to ~45%, "Above labeled limit, peak 48°C". The what-if table shows that moving it indoors saves it. Click **Is it safe to use?**
-4. **Late data (the Tiger moment):** *Insulin: late upload (no fix)*. Dashboard 100% vs raw truth ~91%, because the late rows sit behind the continuous-aggregate watermark. Click **Repair late windows**: both agree. (Normal path: `/api/ingest` detects late rows and refreshes just those buckets.)
+4. **Late data (the Tiger moment):** *Insulin: late upload (no fix)*. Dashboard ~97–99% vs raw truth ~90%, because the late rows sit behind the continuous-aggregate watermark (the strip shows them in red behind the watermark line). Click **Repair late windows**: the rows turn green and both numbers agree. (Normal path: `/api/ingest` detects late rows and refreshes just those buckets.)
 5. **Summer storm outage → Outage rescue.** Ranked list: your hot-car EpiPen fails first (~3 h) vs 12 h to restore. Click **Gemini dispatch plan**.
 6. **Refill letter** on the insulin. Then **Porch heat** → **Gemini pharmacy brief**.
 7. **Alerts** tab: the hot-car and outage alerts were opened by a job running inside Tiger; the sensor-silent alert resolved itself when the late data arrived.
 8. **Ask LIFELOG:** "Which of my medicines is in the worst shape, and why?" Gemini calls the tools and shows which.
-9. **Under the hood:** compression ratio, scheduled jobs, aggregate vs raw timing. Optionally **Start live sensors** and watch the dashboard move.
+9. **Under the hood:** compression ratio, scheduled jobs, rollup vs raw timings (the 30-day calendar is ~200× faster from `readings_1d` at scale). Optionally **Start live sensors** and watch the dashboard move.
 
 ## API
-`GET /api/items`, `GET /api/items/{id}`, `GET /api/items/{id}/compare`, `POST /api/items/{id}/advice|visual|letter|trip|repair`,
-`POST /api/products/extract`, `POST /api/products`, `POST /api/ingest`, `POST /api/voice`,
+`GET /api/health`, `GET /api/items`, `GET|PATCH /api/items/{id}` (PATCH: `opened_at`, `expires_on`, `lot`),
+`GET /api/items/{id}/compare|history|recalls|accuracy|export.csv`, `POST /api/items/{id}/advice|visual|letter|trip|repair`,
+`POST /api/products/extract|lookup`, `POST /api/products`, `POST /api/ingest`, `POST /api/voice`, `GET /api/stream` (SSE),
 `GET /api/rescue`, `POST /api/rescue/plan`, `GET /api/porch`, `POST /api/porch/brief`, `GET /api/alerts`, `POST /api/alerts/check`,
-`POST /api/alerts/{id}/ack`, `GET /api/tiger`, `POST /api/sim/{start|stop|status}`, `POST /api/ask`,
+`POST /api/alerts/{id}/ack`, `POST /api/share`, `GET /api/shares`, `GET|DELETE /api/share/{token}`, `GET /s/{token}` (caregiver page),
+`GET /api/tiger[?fresh=1]`, `POST /api/sim/{start|stop|status}`, `POST /api/ask`,
 `POST /api/demo/{reset|hot_car|late_upload|storm|clear_storm}`.
 
 `POST /api/ingest` body:
