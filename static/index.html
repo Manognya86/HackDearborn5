@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIFELOG Home</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot"></span>LIFELOG <span class="muted">Home</span></div>
+  <nav id="nav">
+    <button data-view="meds" class="active">My medicines</button>
+    <button data-view="add">Add medicine</button>
+    <button data-view="voice">Voice report</button>
+    <button data-view="rescue">Outage rescue</button>
+    <button data-view="trip">Trip check</button>
+    <button data-view="porch">Porch heat</button>
+    <button data-view="demo">Demo controls</button>
+  </nav>
+  <div id="health" class="health"></div>
+</header>
+
+<main>
+  <!-- ============================================================ medicines -->
+  <section id="view-meds" class="view active">
+    <div class="split">
+      <aside id="item-list" class="list"></aside>
+      <div id="item-detail" class="detail"><p class="muted pad">Select a medicine.</p></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ add -->
+  <section id="view-add" class="view">
+    <div class="card narrow">
+      <h2>Add a medicine from its label</h2>
+      <p class="muted">Photograph the box or upload the package insert (PDF). Gemini reads the storage rules
+        and builds this medicine's life-budget model, quoting the label.</p>
+      <form id="label-form" class="row">
+        <input type="file" id="label-file" accept="image/*,application/pdf" required>
+        <button class="primary" type="submit">Extract with Gemini</button>
+      </form>
+      <div id="label-result"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ voice -->
+  <section id="view-voice" class="view">
+    <div class="card narrow">
+      <h2>Tell LIFELOG what happened</h2>
+      <p class="muted">"I left my EpiPen in the car for about two hours this afternoon." Gemini turns it into exposure data.</p>
+      <label>Medicine <select id="voice-item"></select></label>
+      <div class="row">
+        <button id="rec-btn" class="primary">Start recording</button>
+        <span id="rec-status" class="muted"></span>
+      </div>
+      <p class="muted">or type it:</p>
+      <textarea id="voice-text" rows="3" placeholder="I left it in the car for about two hours, it was really hot out."></textarea>
+      <button id="voice-send">Send report</button>
+      <div id="voice-result"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ rescue -->
+  <section id="view-rescue" class="view">
+    <div class="split">
+      <div id="rescue-map" class="map"></div>
+      <div class="detail">
+        <div class="row between">
+          <h2>Outage rescue</h2>
+          <button id="plan-btn" class="primary">Gemini dispatch plan</button>
+        </div>
+        <div id="rescue-list"></div>
+        <div id="rescue-plan"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ trip -->
+  <section id="view-trip" class="view">
+    <div class="card narrow">
+      <h2>Trip pre-check</h2>
+      <p class="muted">Paste your itinerary. Gemini splits it into legs, Open-Meteo forecasts each place, and the
+        life-budget engine simulates what the trip will cost your medicine.</p>
+      <label>Medicine <select id="trip-item"></select></label>
+      <textarea id="trip-text" rows="5">Drive to DTW Friday 7am, park car. Fly DTW to PHX 9:30am-11:45am local. Rental car, then hiking at Camelback Mountain 1pm-4pm with the car parked at the trailhead. Hotel until Sunday 10am, fly back.</textarea>
+      <button id="trip-btn" class="primary">Simulate trip</button>
+      <div id="trip-result"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ porch -->
+  <section id="view-porch" class="view">
+    <div class="split">
+      <div id="porch-map" class="map"></div>
+      <div class="detail">
+        <div class="row between">
+          <h2>Porch Heat Index <span class="muted small">mail-order deliveries, August 2026</span></h2>
+          <button id="brief-btn" class="primary">Gemini pharmacy brief</button>
+        </div>
+        <div id="porch-table"></div>
+        <div id="porch-brief"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ demo -->
+  <section id="view-demo" class="view">
+    <div class="card narrow">
+      <h2>Demo controls</h2>
+      <div class="demo-grid">
+        <button data-demo="reset">Reset &amp; seed data</button>
+        <button data-demo="hot_car">EpiPen: hot car (last 2h)</button>
+        <button data-demo="late_upload?auto_refresh=false">Insulin: late upload (no fix)</button>
+        <button data-demo="late_upload">Insulin: late upload + targeted refresh</button>
+        <button id="repair-btn">Repair late windows</button>
+        <button data-demo="storm">Summer storm outage</button>
+        <button data-demo="clear_storm">Clear outage</button>
+      </div>
+      <h3>Late-data check: insulin vial</h3>
+      <p class="muted">The dashboard reads the continuous aggregate. Rows that arrive older than its watermark stay
+        invisible until refreshed. Compare against a recomputation from raw readings.</p>
+      <div id="compare"></div>
+      <pre id="demo-log" class="log"></pre>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
