@@ -1,3 +1,6 @@
+-- Bodies reference readings_5m, created afterwards in aggregates.sql.
+SET check_function_bodies = off;
+
 -- Life-budget math. Mirrors lifelog/engine.py exactly (tests/test_parity.py checks this).
 --
 -- Model JSON (extracted from the label by Gemini):
@@ -64,9 +67,22 @@ RETURNS DOUBLE PRECISION LANGUAGE sql IMMUTABLE AS $$
     END
 $$;
 
--- Per-bucket timeline with running budget use. p_raw = true bypasses the continuous
--- aggregate and recomputes from raw readings (the "ground truth" for the late-data demo).
-CREATE OR REPLACE FUNCTION item_timeline(p_item INT, p_raw BOOLEAN DEFAULT FALSE)
+-- Exact bucket burn: uses the mean per-reading rate when available, else burn(avg temperature).
+CREATE OR REPLACE FUNCTION bucket_burn_exact(avg_t DOUBLE PRECISION, min_t DOUBLE PRECISION, avg_rate DOUBLE PRECISION,
+                                             m JSONB, hours DOUBLE PRECISION)
+RETURNS DOUBLE PRECISION LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN coalesce((m->>'freeze_discard')::bool, false) AND min_t <= (m->>'freeze_c')::float8 THEN 1.0
+        WHEN avg_rate IS NOT NULL THEN least(1.0, avg_rate * hours)
+        ELSE least(1.0, burn_rate(avg_t, m) * hours)
+    END
+$$;
+
+-- Per-bucket timeline with running budget use.
+--   p_raw   = true recomputes from raw readings instead of the continuous aggregate (ground truth)
+--   p_naive = true uses burn(average temperature) instead of the per-reading rate (accuracy comparison)
+DROP FUNCTION IF EXISTS item_timeline(INT, BOOLEAN);
+CREATE OR REPLACE FUNCTION item_timeline(p_item INT, p_raw BOOLEAN DEFAULT FALSE, p_naive BOOLEAN DEFAULT FALSE)
 RETURNS TABLE (bucket TIMESTAMPTZ, avg_temp DOUBLE PRECISION, min_temp DOUBLE PRECISION,
                max_temp DOUBLE PRECISION, n BIGINT, zone TEXT, burn DOUBLE PRECISION, used DOUBLE PRECISION)
 LANGUAGE sql STABLE AS $$
@@ -74,20 +90,29 @@ LANGUAGE sql STABLE AS $$
         SELECT p.model, i.started_at FROM items i JOIN products p ON p.id = i.product_id WHERE i.id = p_item
     ),
     b AS (
-        SELECT r.bucket, r.avg_temp, r.min_temp, r.max_temp, r.n
+        SELECT r.bucket, r.avg_temp, r.min_temp, r.max_temp, r.n, r.avg_rate
         FROM readings_5m r WHERE NOT p_raw AND r.item_id = p_item
         UNION ALL
-        SELECT time_bucket('5 minutes', x.ts), avg(x.temp_c), min(x.temp_c), max(x.temp_c), count(*)
-        FROM readings x WHERE p_raw AND x.item_id = p_item
+        SELECT time_bucket('5 minutes', x.ts), avg(x.temp_c), min(x.temp_c), max(x.temp_c), count(*),
+               avg(least(burn_rate(x.temp_c, m.model), 1e6))
+        FROM readings x, m WHERE p_raw AND x.item_id = p_item
         GROUP BY 1
+    ),
+    c AS (
+        SELECT b.*, m.model,
+               bucket_burn_exact(b.avg_temp, b.min_temp, CASE WHEN p_naive THEN NULL ELSE b.avg_rate END,
+                                 m.model, 5 / 60.0) AS burn
+        FROM b, m WHERE b.bucket >= m.started_at
     )
-    SELECT b.bucket, b.avg_temp, b.min_temp, b.max_temp, b.n,
-           zone_of(b.avg_temp, b.min_temp, m.model),
-           bucket_burn(b.avg_temp, b.min_temp, m.model, 5 / 60.0),
-           least(1.0, sum(bucket_burn(b.avg_temp, b.min_temp, m.model, 5 / 60.0)) OVER (ORDER BY b.bucket))
-    FROM b, m
-    WHERE b.bucket >= m.started_at
-    ORDER BY b.bucket
+    SELECT c.bucket, c.avg_temp, c.min_temp, c.max_temp, c.n,
+           -- a brief spike inside an otherwise in-range bucket is attributed to the spike's zone
+           CASE WHEN c.burn > 0 AND burn_rate(c.avg_temp, c.model) = 0
+                THEN zone_of(c.max_temp, c.min_temp, c.model)
+                ELSE zone_of(c.avg_temp, c.min_temp, c.model) END,
+           c.burn,
+           least(1.0, sum(c.burn) OVER (ORDER BY c.bucket))
+    FROM c
+    ORDER BY c.bucket
 $$;
 
 -- Collapse the timeline into exposure episodes (gaps-and-islands): what consumed the budget.

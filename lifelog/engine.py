@@ -94,9 +94,9 @@ def whatif(remaining: float, current_t: float, m: dict, horizon_h: float = 12) -
     target_mid = (m["target_min_c"] + m["target_max_c"]) / 2
     options = [
         ("Leave it where it is", current_t),
-        ("Back into labeled storage", target_mid),
-        ("Insulated cooler with ice pack", 10.0),
-        ("Indoors with air conditioning", 22.0),
+        ("Put it back in its usual storage", target_mid),
+        ("Put it in a cooler with an ice pack", 10.0),
+        ("Bring it indoors with air conditioning", 22.0),
         ("Carry it on your body", 31.0),
     ]
     seen, out = set(), []
@@ -148,3 +148,91 @@ def daterange(start: datetime, end: datetime, step: timedelta):
     while t < end:
         yield t
         t += step
+
+
+# ------------------------------------------------------------------ accuracy helpers
+def exact_budget_used(readings: list[tuple], m: dict, started_at=None) -> float:
+    """Independent Python recomputation from raw (ts, temp) readings: mean per-reading rate per
+    5-minute bucket, same rule as the SQL continuous aggregate. Used to cross-check SQL."""
+    buckets: dict = {}
+    for ts, t in readings:
+        if started_at and ts < started_at:
+            continue
+        key = ts.replace(minute=ts.minute - ts.minute % 5, second=0, microsecond=0)
+        buckets.setdefault(key, []).append(t)
+    used = 0.0
+    for temps in buckets.values():
+        if m.get("freeze_discard") and min(temps) <= m["freeze_c"]:
+            used += 1.0
+            continue
+        rate = sum(min(burn_rate(t, m), 1e6) for t in temps) / len(temps)
+        used += min(1.0, rate * BUCKET_H)
+    return min(1.0, used)
+
+
+GAP_ASSUMED_ROOM_C = 25.0
+
+
+def gap_worst_case(remaining: float, gaps: list[dict], m: dict) -> float:
+    """Pessimistic budget if every data gap was spent at the hotter of its last known temperature
+    and a warm room (25C). The true value lies between this and `remaining`."""
+    low = remaining
+    for g in gaps:
+        t = max(g.get("last_temp") or GAP_ASSUMED_ROOM_C, GAP_ASSUMED_ROOM_C)
+        low -= step_burn(t, m, g["hours"])
+    return max(0.0, low)
+
+
+# ------------------------------------------------------------------ sensor validation
+VALID_RANGE_C = (-40.0, 85.0)
+SPIKE_C_PER_MIN = 15.0
+
+
+def validate_readings(readings: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """Returns (accepted, rejected, flagged). Rejects impossible or non-numeric values and duplicate
+    timestamps; flags physically implausible jumps (kept, but marked for review)."""
+    accepted, rejected, flagged, seen = [], [], [], set()
+    prev = None
+    for r in sorted(readings, key=lambda r: r["ts"]):
+        t = r.get("temp_c")
+        if not isinstance(t, (int, float)) or t != t or not (VALID_RANGE_C[0] <= t <= VALID_RANGE_C[1]):
+            rejected.append({**r, "reason": "out of physical range"})
+            continue
+        if r["ts"] in seen:
+            rejected.append({**r, "reason": "duplicate timestamp"})
+            continue
+        seen.add(r["ts"])
+        if prev is not None:
+            minutes = max((r["ts"] - prev["ts"]).total_seconds() / 60, 1 / 60)
+            if abs(t - prev["temp_c"]) / max(minutes, 1.0) > SPIKE_C_PER_MIN:
+                flagged.append({**r, "reason": f"jump of {t - prev['temp_c']:+.1f}C in {minutes:.1f} min"})
+        accepted.append(r)
+        prev = r
+    return accepted, rejected, flagged
+
+
+# ------------------------------------------------------------------ plain-language status
+STATUS_TEXT = {
+    "DO_NOT_USE": "Do not use",
+    "CHECK": "Check on it",
+    "ASK_PHARMACIST": "Check with your pharmacist",
+    "USE_SOON": "OK to use, act soon",
+    "USE": "Safe to use",
+}
+
+
+def status_of(state: dict, worst_case: float, zone: str) -> dict:
+    """Rule-based traffic light that needs no AI: what a person should do, in one line."""
+    r = state["remaining"]
+    silent_h = (state.get("stale_minutes") or 0) / 60
+    if zone == "Frozen" or r <= 0:
+        code, why = "DO_NOT_USE", "It froze or used its whole life budget." if r <= 0 else "It froze. The label says not to use frozen medicine."
+    elif r < 0.2 or (worst_case < 0.2 and r - worst_case > 0.05):
+        code, why = "ASK_PHARMACIST", "Most of its life budget is used, or a data gap makes it uncertain."
+    elif silent_h >= 1:
+        code, why = "CHECK", f"No readings for {silent_h:.0f} h, so what happened since is unknown. Check the sensor and where the medicine is."
+    elif r < 0.5 or zone == "Above labeled limit":
+        code, why = "USE_SOON", "It is using budget faster than normal." if zone == "Above labeled limit" else "More than half its life budget is used."
+    else:
+        code, why = "USE", "Stored within its label's limits."
+    return {"code": code, "label": STATUS_TEXT[code], "why": why}

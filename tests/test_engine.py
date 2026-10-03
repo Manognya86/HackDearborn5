@@ -60,3 +60,30 @@ def test_outage_fridge_warms_gradually():
     room = engine.outage_hours_left(1.0, 32, 32, glp1)
     assert room is not None and room < 10
     assert fridge is None or fridge > room + 5
+
+
+def test_spike_inside_bucket_counts_per_reading():
+    """A 1-minute 25C spike in a 3C bucket averages 7.4C (in range): burns nothing by average, but does per reading."""
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
+    temps = [3.0, 3.0, 25.0, 3.0, 3.0]
+    exact = engine.exact_budget_used([(t0 + timedelta(minutes=i), t) for i, t in enumerate(temps)], INS)
+    naive = engine.step_burn(sum(temps) / len(temps), INS, engine.BUCKET_H)
+    assert naive == 0 and exact > 0
+
+
+def test_validation_rejects_impossible_and_flags_jumps():
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
+    rows = [{"ts": t0, "temp_c": 4.5}, {"ts": t0 + timedelta(minutes=1), "temp_c": 999},
+            {"ts": t0 + timedelta(minutes=2), "temp_c": 40.0}, {"ts": t0 + timedelta(minutes=2), "temp_c": 5.0}]
+    ok, rejected, flagged = engine.validate_readings(rows)
+    assert len(rejected) == 2 and len(ok) == 2 and len(flagged) == 1
+
+
+def test_gap_widens_uncertainty_and_silence_changes_status():
+    worst = engine.gap_worst_case(1.0, [{"hours": 6, "last_temp": 4.5}], INS)
+    assert worst < 1.0
+    st = engine.status_of({"remaining": 1.0, "stale_minutes": 360}, worst, "Labeled storage")
+    assert st["code"] == "CHECK"
+    assert engine.status_of({"remaining": 1.0, "stale_minutes": 0}, 1.0, "Labeled storage")["code"] == "USE"
