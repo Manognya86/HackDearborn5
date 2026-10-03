@@ -2,181 +2,256 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="description" content="How much safe life your temperature-sensitive medicines have left.">
 <title>LIFELOG Home</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="/static/style.css?v=2">
+<link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
-<header class="top">
-  <div class="brand"><span class="dot"></span>LIFELOG <span class="muted">Home</span></div>
-  <nav id="nav">
-    <button data-view="meds" class="active">My medicines</button>
-    <button data-view="alerts">Alerts <span id="alert-count" class="badge" hidden></span></button>
-    <button data-view="ask">Ask LIFELOG</button>
-    <button data-view="add">Add medicine</button>
-    <button data-view="voice">Voice report</button>
-    <button data-view="rescue">Outage rescue</button>
-    <button data-view="trip">Trip check</button>
-    <button data-view="porch">Porch heat</button>
-    <button data-view="tiger">Under the hood</button>
-    <button data-view="demo">Demo controls</button>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-pill" viewBox="0 0 24 24"><path d="M10.5 20.5a5 5 0 0 1-7-7l10-10a5 5 0 0 1 7 7z"/><path d="m8.5 8.5 7 7"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></symbol>
+  <symbol id="i-plane" viewBox="0 0 24 24"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></symbol>
+  <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2z"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="sidebar" aria-label="Main navigation">
+    <div class="brand"><img src="/static/icon.svg" alt="" width="28" height="28"><span>LIFELOG</span></div>
+    <nav id="nav">
+      <button data-view="meds" class="active"><svg><use href="#i-pill"/></svg><span>My medicines</span></button>
+      <button data-view="alerts"><svg><use href="#i-bell"/></svg><span>Alerts</span><b id="alert-count" class="badge" hidden></b></button>
+      <button data-view="ask"><svg><use href="#i-chat"/></svg><span>Ask LIFELOG</span></button>
+      <button data-view="rescue"><svg><use href="#i-bolt"/></svg><span>Outage rescue</span></button>
+      <div class="nav-sep">Tools</div>
+      <button data-view="add"><svg><use href="#i-plus"/></svg><span>Add medicine</span></button>
+      <button data-view="voice"><svg><use href="#i-mic"/></svg><span>Voice report</span></button>
+      <button data-view="trip"><svg><use href="#i-plane"/></svg><span>Trip check</span></button>
+      <button data-view="porch"><svg><use href="#i-sun"/></svg><span>Porch heat</span></button>
+      <div class="nav-sep">Behind the scenes</div>
+      <button data-view="tiger"><svg><use href="#i-db"/></svg><span>Under the hood</span></button>
+      <button data-view="demo"><svg><use href="#i-sliders"/></svg><span>Demo controls</span></button>
+    </nav>
+    <div id="health" class="health"></div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="back-btn" hidden aria-label="Back"><svg><use href="#i-back"/></svg></button>
+      <h1 id="page-title">My medicines</h1>
+      <span id="live" class="live-pill" title="Live updates from the database">Connecting…</span>
+      <button class="icon-btn" id="help-btn" aria-label="How to read LIFELOG"><svg><use href="#i-help"/></svg></button>
+    </header>
+
+    <main>
+      <!-- ======================================================= medicines -->
+      <section id="view-meds" class="view active">
+        <div id="meds-summary" class="summary"></div>
+        <div class="meds-layout">
+          <div id="item-list" class="med-grid"></div>
+          <div id="item-detail" class="detail"></div>
+        </div>
+      </section>
+
+      <!-- ======================================================= alerts -->
+      <section id="view-alerts" class="view">
+        <div class="card">
+          <div class="row between">
+            <p class="muted">Checked every minute by a job inside Tiger Data, and within seconds of new readings.</p>
+            <div class="row">
+              <label class="toggle"><input type="checkbox" id="alerts-all"> Whole neighborhood</label>
+              <button id="alerts-check" class="btn">Check now</button>
+            </div>
+          </div>
+          <div id="alerts-list"></div>
+        </div>
+      </section>
+
+      <!-- ======================================================= ask -->
+      <section id="view-ask" class="view">
+        <div class="card chat-card">
+          <div id="chat" class="chat">
+            <div class="msg model intro">Hi! Ask me anything about your medicines. I'll look up your real data before answering, and show you which lookups I used.</div>
+          </div>
+          <div class="chips">
+            <button class="chip" data-q="Which of my medicines is in the worst shape, and why?">Which medicine is in the worst shape?</button>
+            <button class="chip" data-q="If I leave my EpiPen in the car for 3 more hours at 40C, is it still usable?">EpiPen in a hot car for 3 h?</button>
+            <button class="chip" data-q="There's a power outage. What should I do with my medicines and where can I go?">What do I do in an outage?</button>
+            <button class="chip" data-q="Explain my open alerts in plain language.">Explain my alerts</button>
+          </div>
+          <form id="ask-form" class="composer">
+            <input type="text" id="ask-input" placeholder="Ask about your medicines…" autocomplete="off" aria-label="Your question">
+            <button class="btn primary" type="submit">Ask</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- ======================================================= rescue -->
+      <section id="view-rescue" class="view">
+        <div class="two-col">
+          <div id="rescue-map" class="map"></div>
+          <div class="card">
+            <div class="row between"><h2>Who needs help first</h2><button id="plan-btn" class="btn ai"><svg><use href="#i-spark"/></svg>Dispatch plan</button></div>
+            <div id="rescue-list"></div>
+            <div id="rescue-plan"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= add -->
+      <section id="view-add" class="view">
+        <div class="card narrow">
+          <h2>Add a medicine from its label</h2>
+          <p class="muted">Take a photo of the box or upload the leaflet (PDF). Gemini reads the storage rules and sets up this medicine's life budget, quoting the label.</p>
+          <form id="label-form" class="upload">
+            <label class="dropzone"><svg><use href="#i-camera"/></svg><span>Choose a photo or PDF</span>
+              <input type="file" id="label-file" accept="image/*,application/pdf" capture="environment" required></label>
+            <button class="btn primary" type="submit">Read the label</button>
+          </form>
+          <div id="label-result"></div>
+        </div>
+      </section>
+
+      <!-- ======================================================= voice -->
+      <section id="view-voice" class="view">
+        <div class="card narrow">
+          <h2>Tell LIFELOG what happened</h2>
+          <p class="muted">For example: "I left my EpiPen in the car for about two hours this afternoon." No sensor needed.</p>
+          <label class="field">Which medicine? <select id="voice-item"></select></label>
+          <div class="row"><button id="rec-btn" class="btn primary big"><svg><use href="#i-mic"/></svg>Start recording</button><span id="rec-status" class="muted"></span></div>
+          <label class="field">…or type it <textarea id="voice-text" rows="3" placeholder="I left it in the car for about two hours, it was really hot out."></textarea></label>
+          <button id="voice-send" class="btn">Send</button>
+          <div id="voice-result"></div>
+        </div>
+      </section>
+
+      <!-- ======================================================= trip -->
+      <section id="view-trip" class="view">
+        <div class="card narrow">
+          <h2>Check a trip before you go</h2>
+          <p class="muted">Paste your plans. LIFELOG checks the weather at each stop and estimates what the trip will cost your medicine.</p>
+          <label class="field">Which medicine? <select id="trip-item"></select></label>
+          <label class="field">Your plans <textarea id="trip-text" rows="5">Drive to DTW Friday 7am, park car. Fly DTW to PHX 9:30am-11:45am local. Rental car, then hiking at Camelback Mountain 1pm-4pm with the car parked at the trailhead. Hotel until Sunday 10am, fly back.</textarea></label>
+          <button id="trip-btn" class="btn primary">Check my trip</button>
+          <div id="trip-result"></div>
+        </div>
+      </section>
+
+      <!-- ======================================================= porch -->
+      <section id="view-porch" class="view">
+        <div class="two-col">
+          <div id="porch-map" class="map"></div>
+          <div class="card">
+            <div class="row between"><h2>Mail-order heat, August 2026</h2><button id="brief-btn" class="btn ai"><svg><use href="#i-spark"/></svg>Pharmacy brief</button></div>
+            <p class="muted small">How long delivered medicines sat in mailboxes above 30°C, by ZIP code and carrier.</p>
+            <div id="porch-table"></div>
+            <div id="porch-brief"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======================================================= tiger -->
+      <section id="view-tiger" class="view">
+        <div class="card">
+          <div class="row between"><p class="muted">Live numbers from the database that powers LIFELOG.</p><button id="tiger-refresh" class="btn">Refresh</button></div>
+          <div id="tiger-body"></div>
+        </div>
+      </section>
+
+      <!-- ======================================================= demo -->
+      <section id="view-demo" class="view">
+        <div class="card narrow">
+          <h2>Demo controls</h2>
+          <div class="demo-grid">
+            <button class="btn" data-demo="reset">Reset &amp; seed data</button>
+            <button class="btn" data-demo="hot_car">EpiPen: hot car (last 2 h)</button>
+            <button class="btn" data-demo="late_upload?auto_refresh=false">Insulin: late upload (no fix)</button>
+            <button class="btn" data-demo="late_upload">Insulin: late upload + fix</button>
+            <button class="btn" id="repair-btn">Repair late windows</button>
+            <button class="btn" data-demo="storm">Summer storm outage</button>
+            <button class="btn" data-demo="clear_storm">Clear outage</button>
+            <button class="btn primary" id="sim-btn">Start live sensors</button>
+          </div>
+          <p id="sim-status" class="muted small"></p>
+          <h3>Late-data check: insulin vial</h3>
+          <p class="muted small">The dashboard reads a continuous aggregate. Readings that arrive late stay hidden until their window is refreshed.</p>
+          <div id="compare"></div>
+          <pre id="demo-log" class="log"></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="tabbar" aria-label="Main navigation">
+    <button data-view="meds" class="active"><svg><use href="#i-pill"/></svg><span>Medicines</span></button>
+    <button data-view="alerts"><svg><use href="#i-bell"/></svg><span>Alerts</span><b id="alert-count-m" class="badge" hidden></b></button>
+    <button data-view="ask"><svg><use href="#i-chat"/></svg><span>Ask</span></button>
+    <button data-view="rescue"><svg><use href="#i-bolt"/></svg><span>Outage</span></button>
+    <button id="more-btn"><svg><use href="#i-more"/></svg><span>More</span></button>
   </nav>
-  <div id="health" class="health"></div>
-</header>
+</div>
 
-<main>
-  <!-- ============================================================ medicines -->
-  <section id="view-meds" class="view active">
-    <div class="split">
-      <aside id="item-list" class="list"></aside>
-      <div id="item-detail" class="detail"><p class="muted pad">Select a medicine.</p></div>
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-label="More">
+    <div class="sheet-grid">
+      <button data-view="add"><svg><use href="#i-plus"/></svg>Add medicine</button>
+      <button data-view="voice"><svg><use href="#i-mic"/></svg>Voice report</button>
+      <button data-view="trip"><svg><use href="#i-plane"/></svg>Trip check</button>
+      <button data-view="porch"><svg><use href="#i-sun"/></svg>Porch heat</button>
+      <button data-view="tiger"><svg><use href="#i-db"/></svg>Under the hood</button>
+      <button data-view="demo"><svg><use href="#i-sliders"/></svg>Demo controls</button>
     </div>
-  </section>
+  </div>
+</div>
 
-  <!-- ============================================================ alerts -->
-  <section id="view-alerts" class="view">
-    <div class="card narrow">
-      <div class="row between">
-        <h2>Alerts <span class="muted small">written every minute by a Tiger Data scheduled job (check_alerts)</span></h2>
-        <div class="row"><label class="small" style="margin:0"><input type="checkbox" id="alerts-all"> Whole neighborhood</label>
-          <button id="alerts-check">Run check now</button></div>
-      </div>
-      <div id="alerts-list"></div>
+<div id="help" class="sheet" hidden>
+  <div class="sheet-panel help" role="dialog" aria-labelledby="help-title">
+    <div class="row between"><h2 id="help-title">How to read LIFELOG</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <div class="help-grid">
+      <div><div class="ring-demo" data-pct="72"></div><h3>Life budget</h3><p>Every medicine starts at 100%. Time spent too warm (or too cold) uses some of it up, at the speed its label allows. It doesn't refill.</p></div>
+      <div><h3>The traffic light</h3>
+        <p><span class="pill USE">Safe to use</span> stored within the label's limits.</p>
+        <p><span class="pill USE_SOON">OK to use, act soon</span> it's using budget faster than normal, or over half is gone.</p>
+        <p><span class="pill ASK_PHARMACIST">Check with your pharmacist</span> little budget left, or missing data makes it uncertain.</p>
+        <p><span class="pill DO_NOT_USE">Do not use</span> it froze or the budget ran out.</p></div>
+      <div><h3>Where the rules come from</h3><p>From the medicine's own label, read by Gemini and quoted word for word. When a label doesn't say how long it tolerates heat above its limit, LIFELOG assumes 8 hours and tells you so.</p></div>
+      <div><h3>Missing data</h3><p>If a sensor goes quiet, LIFELOG shows a range: the budget if nothing happened, and the worst case if the medicine sat at room temperature the whole time.</p></div>
     </div>
-  </section>
+    <p class="muted small">LIFELOG supports your judgment; it isn't medical advice. When in doubt, ask your pharmacist.</p>
+  </div>
+</div>
 
-  <!-- ============================================================ ask -->
-  <section id="view-ask" class="view">
-    <div class="card narrow">
-      <h2>Ask LIFELOG</h2>
-      <p class="muted">Gemini answers by calling functions that query your data in Tiger Data. Each answer shows which ones it called.</p>
-      <div id="chat" class="chat"></div>
-      <form id="ask-form" class="row">
-        <input type="text" id="ask-input" placeholder="Is my insulin still OK after last night?" autocomplete="off" style="flex:1">
-        <button class="primary" type="submit">Ask</button>
-      </form>
-      <div class="row small">
-        <button class="chip" data-q="Which of my medicines is in the worst shape, and why?">Worst shape?</button>
-        <button class="chip" data-q="If I leave my EpiPen in the car for 3 more hours at 40C, is it still usable?">EpiPen in car 3 h?</button>
-        <button class="chip" data-q="There's an outage. What should I do with my medicines and where can I go?">Outage plan</button>
-        <button class="chip" data-q="Explain my open alerts in plain language.">Explain alerts</button>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================================================ tiger -->
-  <section id="view-tiger" class="view">
-    <div class="card narrow">
-      <div class="row between"><h2>Under the hood: Tiger Data</h2><button id="tiger-refresh">Refresh</button></div>
-      <div id="tiger-body"></div>
-    </div>
-  </section>
-
-  <!-- ============================================================ add -->
-  <section id="view-add" class="view">
-    <div class="card narrow">
-      <h2>Add a medicine from its label</h2>
-      <p class="muted">Photograph the box or upload the package insert (PDF). Gemini reads the storage rules
-        and builds this medicine's life-budget model, quoting the label.</p>
-      <form id="label-form" class="row">
-        <input type="file" id="label-file" accept="image/*,application/pdf" required>
-        <button class="primary" type="submit">Extract with Gemini</button>
-      </form>
-      <div id="label-result"></div>
-    </div>
-  </section>
-
-  <!-- ============================================================ voice -->
-  <section id="view-voice" class="view">
-    <div class="card narrow">
-      <h2>Tell LIFELOG what happened</h2>
-      <p class="muted">"I left my EpiPen in the car for about two hours this afternoon." Gemini turns it into exposure data.</p>
-      <label>Medicine <select id="voice-item"></select></label>
-      <div class="row">
-        <button id="rec-btn" class="primary">Start recording</button>
-        <span id="rec-status" class="muted"></span>
-      </div>
-      <p class="muted">or type it:</p>
-      <textarea id="voice-text" rows="3" placeholder="I left it in the car for about two hours, it was really hot out."></textarea>
-      <button id="voice-send">Send report</button>
-      <div id="voice-result"></div>
-    </div>
-  </section>
-
-  <!-- ============================================================ rescue -->
-  <section id="view-rescue" class="view">
-    <div class="split">
-      <div id="rescue-map" class="map"></div>
-      <div class="detail">
-        <div class="row between">
-          <h2>Outage rescue</h2>
-          <button id="plan-btn" class="primary">Gemini dispatch plan</button>
-        </div>
-        <div id="rescue-list"></div>
-        <div id="rescue-plan"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================================================ trip -->
-  <section id="view-trip" class="view">
-    <div class="card narrow">
-      <h2>Trip pre-check</h2>
-      <p class="muted">Paste your itinerary. Gemini splits it into legs, Open-Meteo forecasts each place, and the
-        life-budget engine simulates what the trip will cost your medicine.</p>
-      <label>Medicine <select id="trip-item"></select></label>
-      <textarea id="trip-text" rows="5">Drive to DTW Friday 7am, park car. Fly DTW to PHX 9:30am-11:45am local. Rental car, then hiking at Camelback Mountain 1pm-4pm with the car parked at the trailhead. Hotel until Sunday 10am, fly back.</textarea>
-      <button id="trip-btn" class="primary">Simulate trip</button>
-      <div id="trip-result"></div>
-    </div>
-  </section>
-
-  <!-- ============================================================ porch -->
-  <section id="view-porch" class="view">
-    <div class="split">
-      <div id="porch-map" class="map"></div>
-      <div class="detail">
-        <div class="row between">
-          <h2>Porch Heat Index <span class="muted small">mail-order deliveries, August 2026</span></h2>
-          <button id="brief-btn" class="primary">Gemini pharmacy brief</button>
-        </div>
-        <div id="porch-table"></div>
-        <div id="porch-brief"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================================================ demo -->
-  <section id="view-demo" class="view">
-    <div class="card narrow">
-      <h2>Demo controls</h2>
-      <div class="demo-grid">
-        <button data-demo="reset">Reset &amp; seed data</button>
-        <button data-demo="hot_car">EpiPen: hot car (last 2h)</button>
-        <button data-demo="late_upload?auto_refresh=false">Insulin: late upload (no fix)</button>
-        <button data-demo="late_upload">Insulin: late upload + targeted refresh</button>
-        <button id="repair-btn">Repair late windows</button>
-        <button data-demo="storm">Summer storm outage</button>
-        <button data-demo="clear_storm">Clear outage</button>
-        <button id="sim-btn" class="primary">Start live sensors</button>
-      </div>
-      <p id="sim-status" class="muted small"></p>
-      <h3>Late-data check: insulin vial</h3>
-      <p class="muted">The dashboard reads the continuous aggregate. Rows that arrive older than its watermark stay
-        invisible until refreshed. Compare against a recomputation from raw readings.</p>
-      <div id="compare"></div>
-      <pre id="demo-log" class="log"></pre>
-    </div>
-  </section>
-</main>
-
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
-<script src="/static/app.js?v=2"></script>
+<script src="/static/app.js?v=6"></script>
 </body>
 </html>
