@@ -1,7 +1,7 @@
 // LIFELOG service worker: offline app shell + notifications. Data (/api) is always fetched live.
-const CACHE = "lifelog-shell-v2";
+const CACHE = "lifelog-shell-v3";
 // "/" needs a session (it redirects to /login otherwise), so it is cached on the first signed-in visit, not at install
-const SHELL = ["/static/style.css?v=11", "/static/app.js?v=15", "/static/icon.svg", "/manifest.webmanifest"];
+const SHELL = ["/static/style.css?v=12", "/static/app.js?v=16", "/static/icon.svg", "/manifest.webmanifest"];
 const CACHEABLE = [...SHELL, "/"];
 
 self.addEventListener("install", (e) => {

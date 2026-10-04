@@ -329,3 +329,5 @@ body.pharmacist .pharm-only { display: flex !important; }
 .dose-row .changed { color: var(--warn); font-size: 12.5px; }
 .live-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--ok); background: var(--ok-soft); border-radius: 999px; padding: 3px 10px; }
 .live-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+/* Leaflet draws outage areas and markers in one big <svg>: keep the icon sizing above away from it */
+.leaflet-pane svg { width: auto; height: auto; max-width: none; }

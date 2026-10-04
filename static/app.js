@@ -613,7 +613,7 @@ loaders.rescue = async () => {
   const r = await api("/api/rescue");
   rescueLayer?.remove(); rescueLayer = L.layerGroup().addTo(rescueMap);
   L.geoJSON(r.outages, {
-    style: (f) => /-live$/.test(f.properties.source || "") ? { color: "#d97706", weight: 1, dashArray: "4 3", fillOpacity: 0.12 } : { color: "#b91c1c", weight: 1, fillOpacity: 0.1 },
+    style: (f) => /-live$/.test(f.properties.source || "") ? { color: "#d97706", weight: 2, dashArray: "5 4", fillColor: "#f59e0b", fillOpacity: 0.3 } : { color: "#b91c1c", weight: 1, fillOpacity: 0.1 },
     onEachFeature: (f, l) => l.bindPopup(`<b>${esc(f.properties.name)}</b><br>${f.properties.etr_known ? `Estimated restoration ${fmt(f.properties.est_restore_at)}` : "No restoration time yet"}`),
   }).addTo(rescueLayer);
   const lv = r.live || {};
