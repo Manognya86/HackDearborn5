@@ -505,15 +505,22 @@ def ensure_accounts(t_end: datetime | None = None) -> dict:
 
 
 def _demo_links(owner_email: str, customer_email: str) -> None:
-    """The customer looks after the owner through a share link: the caregiver view."""
+    """The customer looks after the owner through a share link: the caregiver view. If the owner revoked the demo
+    link in the app, a fresh one replaces it (the revoked token stays dead)."""
     import secrets
     owner = db.one("SELECT id FROM users WHERE lower(email) = %s", (owner_email,))
     cust = db.one("SELECT id FROM users WHERE lower(email) = %s", (customer_email,))
     if not owner or not cust:
         return
-    if not db.one("SELECT 1 AS x FROM care_links WHERE caregiver_id = %s", (cust["id"],)):
-        token = secrets.token_urlsafe(16)
-        db.execute("INSERT INTO shares (token, user_id, label) VALUES (%s, %s, 'For Alex (caregiver demo)')", (token, owner["id"]))
+    link = db.one("""SELECT cl.id, s.revoked FROM care_links cl LEFT JOIN shares s ON s.token = cl.share_token
+                     WHERE cl.caregiver_id = %s ORDER BY cl.id LIMIT 1""", (cust["id"],))
+    if link and link["revoked"] is False:
+        return
+    token = secrets.token_urlsafe(16)
+    db.execute("INSERT INTO shares (token, user_id, label) VALUES (%s, %s, 'For Alex (caregiver demo)')", (token, owner["id"]))
+    if link:
+        db.execute("UPDATE care_links SET share_token = %s WHERE id = %s", (token, link["id"]))
+    else:
         db.execute("INSERT INTO care_links (caregiver_id, share_token, label) VALUES (%s, %s, 'Manu')", (cust["id"], token))
 
 
