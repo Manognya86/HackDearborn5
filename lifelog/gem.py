@@ -138,6 +138,8 @@ Rules:
 - Every quote field must be copied verbatim from the document. If there is nothing to quote, write 'Not stated on label'.
 - If the label gives no tolerance above its highest limit, set above_limit_budget_hours = 8 and
   above_limit_is_assumption = true.
+- in_use_days is only for multi-use products with a limit after first opening. Single-dose pens and syringes get 0;
+  their "total days at room temperature" belongs in bands.
 {SAFETY}"""
 
 

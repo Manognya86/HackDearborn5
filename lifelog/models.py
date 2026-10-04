@@ -25,8 +25,10 @@ class StabilityModel(BaseModel):
         description="Hours tolerated above the highest labeled limit. If the label gives no number use 8")
     above_limit_is_assumption: bool = Field(description="True if above_limit_budget_hours was not on the label")
     above_limit_quote: str
-    in_use_days: float = Field(description="Days the medicine may be used after first opening or first use, regardless of "
-                                           "temperature (e.g. 'discard 28 days after opening'). 0 if the label gives none")
+    in_use_days: float = Field(description="Calendar days a MULTI-USE product (vial, multi-dose pen, eye-drop bottle) may be used "
+                                           "after it is first opened or first used, even if refrigerated (e.g. 'discard 28 days "
+                                           "after opening'). A cumulative room-temperature allowance ('a total of 14 days at room "
+                                           "temperature') is a band, not this. 0 if the label gives none or the product is single-dose")
     visual_checks: list[str] = Field(description="Visual signs the label says mean do not use (cloudy, particles ...)")
     discard_rules: list[str] = Field(description="Other discard rules, e.g. 'discard 28 days after opening'")
     notes: str
