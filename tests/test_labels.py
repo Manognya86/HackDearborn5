@@ -62,5 +62,5 @@ def test_engine_uses_each_allowance_exactly_as_labeled(key):
         assert engine.step_burn(-1.0, m, 0.1) == 1.0
 
 
-def test_twenty_two_medicines_across_classes():
-    assert len(M.PRODUCTS) == 22 and set(M.SHORT) == set(M.PRODUCTS) == set(M.BRANDS)
+def test_twenty_four_medicines_across_classes():
+    assert len(M.PRODUCTS) == 24 and set(M.SHORT) == set(M.PRODUCTS) == set(M.BRANDS)

@@ -31,6 +31,21 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error(body.detail || `${r.status} ${r.statusText}`);
   return body;
 }
+// ------------------------------------------------------------------ interface language (static/i18n.json)
+let I18N = {};
+const t = (key, vars = {}) => {
+  const s = (I18N[lang] && I18N[lang][key]) || (I18N.en && I18N.en[key]) || key;
+  return s.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? "");
+};
+function applyI18n() {
+  document.documentElement.lang = lang;
+  document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
+  $$("[data-i18n]").forEach((el) => { el.textContent = t(el.dataset.i18n); });
+  if ($("#page-title") && typeof currentView !== "undefined") $("#page-title").textContent = t("nav." + currentView);
+  const note = I18N[lang]?.["note.english"];
+  $$(".i18n-note").forEach((el) => { el.textContent = note || ""; el.hidden = !note; });
+}
+const i18nReady = fetch("/static/i18n.json?v=1").then((r) => r.json()).then((d) => { I18N = d; applyI18n(); }).catch(() => {});
 const LANG_KEY = "lifelog.lang";
 let lang = "en";
 try { lang = localStorage.getItem(LANG_KEY) || "en"; } catch { /* storage blocked */ }
@@ -59,7 +74,7 @@ function ring(value, size, stroke, code, label = "") {
 // ------------------------------------------------------------------ navigation
 const TITLES = { meds: "My medicines", alerts: "Alerts", ask: "Ask LIFELOG", rescue: "Outage rescue", add: "Add medicine",
   voice: "Voice report", trip: "Trip check", porch: "Porch heat", tiger: "Under the hood", dev: "For developers", demo: "Demo controls",
-  review: "Pharmacist review" };
+  review: "Pharmacist review", family: "People I care for", settings: "Settings" };
 const loaders = {};
 let currentView = "meds";
 document.addEventListener("click", (e) => {
@@ -74,7 +89,7 @@ function show(view) {
   $$("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view && !b.closest(".sheet-grid")));
   if (!$(`.tabbar [data-view="${view}"]`)) $("#more-btn").classList.add("active"); else $("#more-btn").classList.remove("active");
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${view}`));
-  $("#page-title").textContent = TITLES[view] || "";
+  $("#page-title").textContent = I18N.en?.["nav." + view] ? t("nav." + view) : (TITLES[view] || "");
   setDetailOpen(view === "meds" && $("#view-meds").classList.contains("detail-open"));
   window.scrollTo(0, 0);
   loaders[view]?.();
@@ -84,12 +99,16 @@ function setDetailOpen(open) {
   $(".meds-layout").classList.toggle("detail-open", open);
   $("#back-btn").hidden = !(open && isMobile() && currentView === "meds");
 }
-$("#lang").value = lang;
-$("#lang").addEventListener("change", (e) => {
-  lang = e.target.value;
+function setLang(v, save = true) {
+  lang = v;
+  for (const sel of ["#lang", "#lang2"]) if ($(sel)) $(sel).value = v;
   try { localStorage.setItem(LANG_KEY, lang); } catch { /* storage blocked */ }
-  toast(lang === "en" ? "Gemini will answer in English" : "Gemini will answer in " + e.target.selectedOptions[0].text);
-});
+  if (save) post("/api/account/lang", { lang }).catch(() => {});
+  applyI18n();
+  if (currentView === "meds") loaders.meds?.();
+}
+$("#lang").value = lang;
+$("#lang").addEventListener("change", (e) => setLang(e.target.value));
 $("#back-btn").addEventListener("click", () => { setDetailOpen(false); window.scrollTo(0, 0); });
 $("#help-btn").addEventListener("click", () => {
   $("#help").hidden = false;
@@ -115,15 +134,15 @@ async function loadItems() {
   const counts = items.reduce((a, i) => ((a[i.status.code] = (a[i.status.code] || 0) + 1), a), {});
   const attention = items.length - (counts.USE || 0);
   $("#meds-summary").innerHTML = !items.length ? "" : attention
-    ? `<span class="pill USE">${counts.USE || 0} safe</span><span class="pill ${counts.DO_NOT_USE ? "DO_NOT_USE" : "USE_SOON"}">${attention} need${attention === 1 ? "s" : ""} attention</span>`
-    : `<span class="pill USE">${icon("check")} All ${items.length} medicines are safe to use</span>`;
+    ? `<span class="pill USE">${esc(t("label.safe_count", { n: counts.USE || 0 }))}</span><span class="pill ${counts.DO_NOT_USE ? "DO_NOT_USE" : "USE_SOON"}">${esc(t("label.attention", { n: attention }))}</span>`
+    : `<span class="pill USE">${icon("check")} ${esc(t("label.all_safe", { n: items.length }))}</span>`;
   $("#item-list").innerHTML = items.map((i) => `
     <button class="med ${i.id === currentItem ? "active" : ""}" data-id="${i.id}">
       ${ring(i.remaining, 56, 6, i.status.code)}
       <div><div class="name">${esc(i.nickname)}</div>
         <div class="sub">${i.stale_minutes > 20 ? `last ${temp(i.current_temp)} · sensor quiet ${hrs(i.stale_minutes / 60)}` : `${temp(i.current_temp)} · ${esc(i.zone.toLowerCase())}`}</div>
         ${i.forecast && ["warming", "cooling"].includes(i.forecast.trend) ? `<div class="sub trend ${i.forecast.minutes_to_limit != null || i.forecast.minutes_to_freeze != null ? "bad" : ""}">${esc(trendText(i.forecast))}</div>` : ""}
-        <span class="pill ${i.status.code}">${esc(i.status.label)}</span></div>
+        <span class="pill ${i.status.code}">${esc(t("status." + i.status.code))}</span></div>
     </button>`).join("") || `<div class="card"><p>No medicines yet.</p><p class="muted">Add one from its label, or open Demo controls and press Reset.</p></div>`;
   $$(".med").forEach((el) => el.addEventListener("click", () => { openItem(+el.dataset.id); }));
   for (const sel of ["#voice-item", "#trip-item"]) {
@@ -134,7 +153,27 @@ async function loadItems() {
   if (!currentItem && items.length && !isMobile()) openItem(items[0].id);
   return items;
 }
-loaders.meds = () => loadItems().then(() => currentItem && !isMobile() && openItem(currentItem, { quiet: true }));
+loaders.meds = () => loadItems().then(() => { loadReminders(); return currentItem && !isMobile() && openItem(currentItem, { quiet: true }); });
+
+async function loadReminders() {
+  const el = $("#reminders"); if (!el) return;
+  let list = [];
+  try { list = await api("/api/reminders?days=30"); } catch { el.innerHTML = ""; return; }
+  const when = (r) => r.days_left < 0 ? t("rem.past") : r.days_left < 1 ? t("rem.today") : t("rem.in_days", { n: Math.ceil(r.days_left) });
+  el.innerHTML = `<div class="card"><h3 style="margin-top:0">${esc(t("rem.title"))}</h3>${list.length ? list.map((r) => `
+    <div class="rem-row ${r.urgency}"><div><b>${esc(r.nickname)}</b><div class="small">${new Date(r.use_by + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric" })} · ${esc(when(r))}
+      <span class="muted">(${esc(r.reason)})</span></div></div>
+      <button class="btn" data-draft="${r.item_id}" style="min-height:32px;padding:4px 10px;font-size:13px">${icon("file")}${esc(t("rem.draft"))}</button></div>`).join("")
+    : `<p class="muted small">${esc(t("rem.none"))}</p>`}<div id="draft-box"></div></div>`;
+  $$("[data-draft]").forEach((b) => b.onclick = (e) => busy(e.currentTarget, async () => {
+    const r = await post(`/api/items/${b.dataset.draft}/letter?ai=false`);
+    const url = location.origin + "/r/" + r.receipt.code;
+    const text = r.letter.replace("/r/" + r.receipt.code, url);
+    $("#draft-box").innerHTML = `<div class="ai-box"><div class="tag offline">${icon("file")}Refill letter draft · receipt ${esc(r.receipt.code)}</div><pre class="log">${esc(text)}</pre>
+      <div class="row"><button class="btn" id="draft-copy">Copy</button><a class="btn" href="/r/${esc(r.receipt.code)}" target="_blank">Open receipt</a></div></div>`;
+    $("#draft-copy").onclick = () => navigator.clipboard.writeText(text).then(() => toast("Copied"));
+  }));
+}
 
 // ------------------------------------------------------------------ medicine detail
 async function openItem(id, { quiet = false } = {}) {
@@ -154,23 +193,23 @@ async function openItem(id, { quiet = false } = {}) {
   $("#item-detail").innerHTML = `
     <div class="card">
       <div class="hero">
-        ${ring(s.remaining, 132, 12, st.code, "<small>budget left</small>")}
+        ${ring(s.remaining, 132, 12, st.code, `<small>${esc(t("label.budget_left"))}</small>`)}
         <div>
           <h2>${esc(d.item.nickname)}</h2>
           <div class="muted small">${esc(d.item.product_name)}</div>
           ${d.review?.status === "approved"
             ? `<div class="review-pill ok">${icon("check")}Rules and wording reviewed by ${esc(d.review.reviewer)}${d.review.credentials ? `, ${esc(d.review.credentials)}` : ""} · ${fmt(d.review.created_at)}</div>`
             : `<div class="review-pill">${icon("info")}Not yet reviewed by a pharmacist${d.review?.status === "changes_requested" ? " (changes requested)" : ""}</div>`}
-          <div class="status"><span class="pill ${st.code}">${esc(st.label)}</span><span class="why">${esc(st.why)}</span></div>
+          <div class="status"><span class="pill ${st.code}">${esc(t("status." + st.code))}</span><span class="why">${esc(st.why)}</span></div>
           <div class="facts">
-            <span>${s.stale_minutes > 20 ? "Last reading" : "Now"} <b>${temp(s.current_temp)}</b></span>
-            <span>Allowed <b>${m.target_min_c}–${m.target_max_c}°C</b></span>
-            <span>At this temperature it lasts <b>${hrs(s.hours_left)}</b></span>
+            <span>${esc(t(s.stale_minutes > 20 ? "label.last" : "label.now"))} <b>${temp(s.current_temp)}</b></span>
+            <span>${esc(t("label.allowed"))} <b>${m.target_min_c}–${m.target_max_c}°C</b></span>
+            <span>${esc(t("label.lasts"))} <b>${hrs(s.hours_left)}</b></span>
             ${s.stale_minutes <= 20 && d.forecast && d.forecast.trend !== "unknown" ? `<span>Trend <b class="trend ${d.forecast.minutes_to_limit != null || d.forecast.minutes_to_freeze != null ? "bad" : ""}">${esc(trendText(d.forecast))}</b></span>` : ""}
             ${s.stale_minutes <= 20 && d.forecast && ["warming", "cooling"].includes(d.forecast.trend) ? `<span>At this trend it lasts <b>${hrs(d.forecast.hours_left)}</b></span>` : ""}
             ${s.stale_minutes <= 20 ? `<span>Used in the last hour <b>${d.burn_last_hour > 0.00005 ? pct(d.burn_last_hour, 2) : "none"}</b></span>` : ""}
-            ${d.dates.use_by ? `<span>Use by <b>${new Date(d.dates.use_by_date + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</b> <span class="muted">(${esc(d.dates.use_by_reason)})</span></span>` : ""}
-            <button class="btn" id="dates-btn" style="min-height:30px;padding:3px 10px;font-size:13px">Dates &amp; lot</button>
+            ${d.dates.use_by ? `<span>${esc(t("label.use_by"))} <b>${new Date(d.dates.use_by_date + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</b> <span class="muted">(${esc(d.dates.use_by_reason)})</span></span>` : ""}
+            <button class="btn" id="dates-btn" style="min-height:30px;padding:3px 10px;font-size:13px">${esc(t("btn.dates"))}</button>
           </div>
           <form id="dates-form" class="dates-form" hidden>
             <label class="small">Opened / first used<input type="date" id="f-opened" value="${d.dates.opened_at ? d.dates.opened_at.slice(0, 10) : ""}"></label>
@@ -182,60 +221,61 @@ async function openItem(id, { quiet = false } = {}) {
           ${uncertain ? `<div class="range-note">The sensor missed ${hrs(d.gaps.reduce((a, g) => a + g.hours, 0))} of data, so the real budget could be as low as <b>${pct(d.worst_case)}</b> (if it sat at room temperature).</div>` : ""}
         </div>
       </div>
-      ${top ? `<div class="todo ${top.level}">${icon("alert")}<div><b>Do this now</b><span>${esc(top.text)}</span></div></div>`
-        : `<div class="todo ok">${icon("check")}<div><b>Nothing to do</b><span>Keep storing it the way you are.</span></div></div>`}
+      ${top ? `<div class="todo ${top.level}">${icon("alert")}<div><b>${esc(t("label.do_now"))}</b><span>${esc(top.text)}</span></div></div>`
+        : `<div class="todo ok">${icon("check")}<div><b>${esc(t("label.nothing"))}</b><span>${esc(t("label.keep"))}</span></div></div>`}
       <div class="actions">
-        <button class="btn primary" id="dose-btn" title="Records this medicine's status at the moment you take it">${icon("check")}I took a dose</button>
-        <button class="btn ai" id="advice-btn">${icon("spark")}Is it safe to use?</button>
-        <label class="btn" for="photo" title="Needs Gemini">${icon("camera")}Photo check</label><input type="file" id="photo" accept="image/*" capture="environment" hidden>
-        <button class="btn" id="letter-btn">${icon("file")}Refill letter</button>
-        <button class="btn" id="receipt-btn" title="A verifiable record a pharmacist can check">${icon("check")}Exposure receipt</button>
-        ${"bluetooth" in navigator ? `<button class="btn" id="ble-btn" title="Bluetooth thermometer (Health Thermometer or Environmental Sensing)">${icon("bolt")}Connect sensor</button>` : ""}
-        <a class="btn" href="/api/items/${id}/export.csv">${icon("download")}Export log</a>
-        <button class="btn" onclick="window.print()">${icon("print")}Print</button>
+        <button class="btn primary" id="dose-btn" title="Records this medicine's status at the moment you take it">${icon("check")}${esc(t("btn.dose"))}</button>
+        <button class="btn ai" id="advice-btn">${icon("spark")}${esc(t("btn.safe"))}</button>
+        <label class="btn" for="photo" title="Needs Gemini">${icon("camera")}${esc(t("btn.photo"))}</label><input type="file" id="photo" accept="image/*" capture="environment" hidden>
+        <button class="btn" id="letter-btn">${icon("file")}${esc(t("btn.letter"))}</button>
+        <button class="btn" id="receipt-btn" title="A verifiable record a pharmacist can check">${icon("check")}${esc(t("btn.receipt"))}</button>
+        ${"bluetooth" in navigator ? `<button class="btn" id="ble-btn" title="Bluetooth thermometer (Health Thermometer or Environmental Sensing)">${icon("bolt")}${esc(t("btn.sensor"))}</button>` : ""}
+        <a class="btn" href="/api/items/${id}/export.csv">${icon("download")}${esc(t("btn.export"))}</a>
+        <button class="btn" onclick="window.print()">${icon("print")}${esc(t("btn.print"))}</button>
       </div>
       <div id="ai-box"></div>
+      ${lang !== "en" ? `<p class="muted small i18n-note">${esc(t("note.english"))}</p>` : ""}
     </div>
 
     <div class="card" style="margin-top:14px">
       <details class="fold" data-k="care" ${openFolds.includes("care") ? "open" : ""}>
-        <summary>Care checklist <span class="muted">${urgent.length ? `${urgent.length} need${urgent.length === 1 ? "s" : ""} attention` : "from the label"}</span></summary>
+        <summary>${esc(t("fold.care"))} <span class="muted">${urgent.length ? `${urgent.length} need${urgent.length === 1 ? "s" : ""} attention` : "from the label"}</span></summary>
         <ul class="checklist">${d.precautions.map((p) => `<li class="${p.level}">${icon(p.level === "info" ? "check" : "alert")}<span>${esc(p.text)}</span></li>`).join("")}</ul>
       </details>
       <details class="fold" data-k="chart" ${openFolds.includes("chart") || !isMobile() ? "open" : ""}>
-        <summary>Last 3 days <span class="muted">temperature and life budget</span></summary>
+        <summary>${esc(t("fold.chart"))} <span class="muted">temperature and life budget</span></summary>
         <div class="chart-box"><canvas id="chart" aria-label="Temperature and life budget over time"></canvas></div>
         <p class="legend-note">The <b style="color:var(--chart-temp)">green line</b> is the temperature, and its dotted end is the live forecast for the next 2 hours${d.forecast?.model ? ` (${esc(d.forecast.model)}, from the last 30 minutes of readings)` : ""}; the dashed line is the label's maximum. The <b style="color:var(--chart-budget)">purple line</b> is the life budget: it only goes down, and only while it's outside the label's range.</p>
       </details>
       <details class="fold" data-k="burn" ${openFolds.includes("burn") ? "open" : ""}>
-        <summary>What used the budget <span class="muted">${d.burners.length ? `${d.burners.length} episode${d.burners.length === 1 ? "" : "s"}` : "nothing yet"}</span></summary>
+        <summary>${esc(t("fold.burn"))} <span class="muted">${d.burners.length ? `${d.burners.length} episode${d.burners.length === 1 ? "" : "s"}` : "nothing yet"}</span></summary>
         ${d.burners.length ? d.burners.map((b) => `<div class="burn-row"><div>${esc(b.zone)}<div class="muted small">${fmt(b.started)} · ${hrs(b.minutes / 60)} · peak ${temp(b.peak_temp)}</div></div>
           <div class="burn-bar" style="width:${(b.burn / maxBurn) * 100}%"></div><div class="num">−${pct(b.burn, 1)}</div></div>`).join("") : `<p class="muted">It has stayed within the label's limits.</p>`}
       </details>
       <details class="fold" data-k="doses" ${openFolds.includes("doses") ? "open" : ""}>
-        <summary>Doses taken <span class="muted">was each dose still good?</span></summary>
+        <summary>${esc(t("fold.doses"))} <span class="muted">was each dose still good?</span></summary>
         <div id="doses-body" class="muted">Loading…</div>
       </details>
       <details class="fold" data-k="ml" ${openFolds.includes("ml") || !isMobile() ? "open" : ""}>
-        <summary>Next 24 hours <span class="muted">forecast from a model trained for this medicine</span></summary>
+        <summary>${esc(t("fold.ml"))} <span class="muted">forecast from a model trained for this medicine</span></summary>
         <div id="ml-body" class="muted">Training…</div>
       </details>
       <details class="fold" data-k="history" ${openFolds.includes("history") ? "open" : ""}>
-        <summary>Last 30 days <span class="muted">daily exposure calendar</span></summary>
+        <summary>${esc(t("fold.history"))} <span class="muted">daily exposure calendar</span></summary>
         <div id="history-body" class="muted">Loading…</div>
       </details>
       <details class="fold" data-k="recalls" ${openFolds.includes("recalls") ? "open" : ""}>
-        <summary>FDA recalls <span class="muted">live from openFDA</span></summary>
+        <summary>${esc(t("fold.recalls"))} <span class="muted">live from openFDA</span></summary>
         <div id="recalls-body" class="muted">Loading…</div>
       </details>
       <details class="fold" data-k="whatif" ${openFolds.includes("whatif") ? "open" : ""}>
-        <summary>What if you act now? <span class="muted">budget left after 12 hours</span></summary>
+        <summary>${esc(t("fold.whatif"))} <span class="muted">budget left after 12 hours</span></summary>
         ${s.zone === "Labeled storage" ? `<p class="small">${icon("check")} It's already in its labeled storage, so there's nothing to change. The table shows what moving it would cost.</p>` : ""}
         <div class="table-wrap"><table><tr><th>If you…</th><th class="num">Temp</th><th class="num">After 12 h</th><th class="num">Lasts</th></tr>
         ${d.whatif.map((w, i) => `<tr class="${i === 0 && w.preserved_vs_now > 0 ? "best" : ""}"><td>${esc(w.option)}</td><td class="num">${temp(w.temp_c)}</td><td class="num">${pct(w.remaining_after)}</td><td class="num">${hrs(w.hours_left)}</td></tr>`).join("")}</table></div>
       </details>
       <details class="fold" data-k="stats" ${openFolds.includes("stats") ? "open" : ""}>
-        <summary>Exposure statistics <span class="muted">mean kinetic temperature, time in each zone</span></summary>
+        <summary>${esc(t("fold.stats"))} <span class="muted">mean kinetic temperature, time in each zone</span></summary>
         <div class="stats">
           <div class="stat"><div class="v">${temp(d.stats.mkt_c)}</div><div class="k">mean kinetic temperature${d.stats.mkt_c > m.target_max_c ? " · above label max" : ""}</div></div>
           <div class="stat"><div class="v">${temp(d.stats.time_weighted_avg_c)}</div><div class="k">time-weighted average</div></div>
@@ -246,15 +286,15 @@ async function openItem(id, { quiet = false } = {}) {
         <p class="muted small">Mean kinetic temperature is the pharmaceutical standard (USP &lt;1079&gt;) for cumulative heat stress: hot spells count more than a plain average.</p>
       </details>
       <details class="fold" data-k="accuracy" ${openFolds.includes("accuracy") ? "open" : ""}>
-        <summary>How accurate is this? <span class="muted">cross-checks and assumptions</span></summary>
+        <summary>${esc(t("fold.accuracy"))} <span class="muted">cross-checks and assumptions</span></summary>
         <div id="accuracy-body" class="muted">Loading…</div>
       </details>
       <details class="fold" data-k="patterns" ${openFolds.includes("patterns") ? "open" : ""}>
-        <summary>Similar histories <span class="muted">what usually happens next</span></summary>
+        <summary>${esc(t("fold.patterns"))} <span class="muted">what usually happens next</span></summary>
         ${d.patterns.map((p) => `<p><b>${esc(p.name)}</b> <span class="muted small">${Math.round(p.similarity * 100)}% similar</span><br><span class="muted small">${esc(p.outcome)}</span></p>`).join("")}
       </details>
       <details class="fold" data-k="label" ${openFolds.includes("label") ? "open" : ""}>
-        <summary>Label rules <span class="muted">${d.item.product_source === "fda" ? "from the FDA label" : d.item.product_source === "gemini" ? "read by Gemini" : "demo product"}</span></summary>
+        <summary>${esc(t("fold.label"))} <span class="muted">${d.item.product_source === "fda" ? "from the FDA label" : d.item.product_source === "gemini" ? "read by Gemini" : "demo product"}</span></summary>
         ${d.item.source_url ? `<p class="source">${icon("file")}<a href="${esc(d.item.source_url)}" target="_blank" rel="noopener">${esc(d.item.source_label || "Source")}</a></p>` : ""}
         <blockquote>${esc(m.target_quote)}</blockquote>
         ${(m.bands || []).map((b) => `<blockquote>${esc(b.quote)}</blockquote>`).join("")}
@@ -620,13 +660,30 @@ function baseMap(el, center, zoom) {
 
 // ------------------------------------------------------------------ outage rescue
 let rescueMap = null, rescueLayer = null;
+async function loadPower() {
+  const box = $("#power-box"); if (!box) return;
+  const p = await api("/api/power");
+  const area = p.utility_area;
+  box.innerHTML = `<div class="power ${p.reported_out ? "out" : ""}">
+    <div><b>${esc(p.reported_out ? t("power.reported") : t("power.question"))}</b>
+      <div class="small muted">${p.reported_out ? `Since ${fmt(p.since)} · LIFELOG plans for your fridge warming until power is back (estimated ${fmt(p.est_restore_at)}).`
+        : area ? `${esc(area.name.split(" (")[0])}: ${area.customers_out} customers out in your ZIP. Only you can confirm your home.` : "LIFELOG only knows the utility's ZIP-level reports. Tell it if your home is out."}</div></div>
+    <button class="btn ${p.reported_out ? "" : "primary"}" id="power-toggle">${esc(t(p.reported_out ? "power.back" : "power.out"))}</button></div>`;
+  $("#power-toggle").onclick = (e) => busy(e.currentTarget, async () => {
+    await post("/api/power", { out: !p.reported_out });
+    toast(p.reported_out ? t("power.back") : t("power.reported")); loaders.rescue(); refreshBadge();
+  });
+}
+
 loaders.rescue = async () => {
+  loadPower().catch(() => {});
   if (!rescueMap) rescueMap = baseMap("rescue-map", [42.3175, -83.2207], 13);
   setTimeout(() => rescueMap.invalidateSize(), 60);
   const r = await api("/api/rescue");
   rescueLayer?.remove(); rescueLayer = L.layerGroup().addTo(rescueMap);
   L.geoJSON(r.outages, {
-    style: (f) => /-live$/.test(f.properties.source || "") ? { color: "#d97706", weight: 2, dashArray: "5 4", fillColor: "#f59e0b", fillOpacity: 0.3 } : { color: "#b91c1c", weight: 1, fillOpacity: 0.1 },
+    style: (f) => /-live$/.test(f.properties.source || "") ? { color: "#d97706", weight: 2, dashArray: "5 4", fillColor: "#f59e0b", fillOpacity: 0.3 }
+      : f.properties.source === "report" ? { color: "#b91c1c", weight: 2, fillColor: "#dc2626", fillOpacity: 0.35 } : { color: "#b91c1c", weight: 1, fillOpacity: 0.1 },
     onEachFeature: (f, l) => l.bindPopup(`<b>${esc(f.properties.name)}</b><br>${f.properties.etr_known ? `Estimated restoration ${fmt(f.properties.est_restore_at)}` : "No restoration time yet"}`),
   }).addTo(rescueLayer);
   const lv = r.live || {};
@@ -826,9 +883,11 @@ loaders.alerts = async () => {
     <div class="alert ${x.resolved_at ? "resolved" : esc(x.severity)}">
       ${icon(x.resolved_at ? "check" : "alert")}
       <div style="flex:1"><div>${esc(x.message)}</div><div class="muted small">${all ? esc(x.user_name) + " · " : ""}${x.resolved_at ? "Resolved " + fmt(x.resolved_at) : "Since " + fmt(x.created_at)}</div></div>
+      ${!x.resolved_at && x.kind === "possible_outage" && x.is_me ? `<button class="btn primary" data-power-out="1">${esc(t("power.out"))}</button>` : ""}
       ${!x.resolved_at && !x.acked && x.is_me ? `<button class="btn" data-ack="${x.id}">Got it</button>` : ""}
     </div>`).join("") || `<div class="banner ok">No alerts. Everything is within its label's limits.</div>`;
   $$("[data-ack]").forEach((b) => b.addEventListener("click", async () => { await post(`/api/alerts/${b.dataset.ack}/ack`); loaders.alerts(); refreshBadge(); }));
+  $$("[data-power-out]").forEach((b) => b.onclick = (e) => busy(e.currentTarget, async () => { await post("/api/power", { out: true }); toast(t("power.reported")); show("rescue"); }));
 };
 $("#alerts-all").addEventListener("change", () => loaders.alerts());
 $("#alerts-check").addEventListener("click", (e) => busy(e.currentTarget, async () => { await post("/api/alerts/check"); await loaders.alerts(); refreshBadge(); }));
@@ -1002,6 +1061,8 @@ loaders.review = async () => {
         <p class="muted small">${e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.citation)}</a>` : esc(e.citation)}</p>
         <p class="small">Heat tolerance just above the label limit: <b>${e.current_value} h → ${e.proposed_value.toLocaleString()} h</b></p>
         ${e.status === "proposed" ? `<div class="row"><button class="btn primary" data-ev="${e.id}" data-approve="1">Approve and recalculate</button><button class="btn" data-ev="${e.id}" data-approve="0">Reject</button></div>` : ""}</div>`).join("")}
+      ${p.history?.length ? `<details class="fold"><summary>Decision history <span class="muted">${p.history.length} recorded</span></summary><ul class="small">${p.history.map((h) =>
+        `<li>${fmt(h.created_at)} · <b>${esc(h.actor)}</b> · ${esc(h.action.replace(/_/g, " "))}${h.detail?.note ? `: "${esc(h.detail.note)}"` : ""}${h.detail?.to ? ` (${h.detail.from} h → ${(+h.detail.to).toLocaleString()} h)` : ""}</li>`).join("")}</ul></details>` : ""}
       <label class="field small">Note<textarea rows="2" class="rv-note" placeholder="Required when requesting changes: what should the wording say?">${esc(p.review?.note || "")}</textarea></label>
       <div class="row"><button class="btn primary" data-rv="approved">Approve rules and wording</button><button class="btn" data-rv="changes_requested">Request changes</button></div>
     </div>`).join("");
@@ -1017,6 +1078,65 @@ loaders.review = async () => {
   }));
 };
 
+// ------------------------------------------------------------------ people I care for (caregiver dashboard)
+loaders.family = async () => {
+  const people = await api("/api/caring");
+  $("#view-family [data-i18n='family.none']").hidden = people.length > 0;
+  $("#family-list").innerHTML = people.map((p) => !p.active ? `<div class="card review-card"><div class="row between"><h2>${esc(p.label || "Shared link")}</h2>
+      <button class="btn" data-uncare="${p.id}">Remove</button></div><p class="muted">This link was turned off by the person who shared it.</p></div>`
+    : `<div class="card review-card"><div class="row between"><h2>${esc(p.label || p.view.name)} <span class="muted small">${esc(p.view.name)}</span></h2>
+      <button class="btn" data-uncare="${p.id}" style="min-height:30px;padding:3px 10px;font-size:13px">Remove</button></div>
+      ${p.view.alerts.length ? p.view.alerts.map((a) => `<div class="banner ${a.severity === "critical" ? "bad" : "warn"} small">${esc(a.message)}</div>`).join("") : ""}
+      <div class="med-grid">${p.view.items.map((i) => `<div class="med">${ring(i.remaining, 56, 6, i.status.code)}<div><div class="name">${esc(i.nickname)}</div>
+        <div class="sub">${temp(i.current_temp)} · ${esc((i.zone || "").toLowerCase())}</div>
+        <span class="pill ${i.status.code}">${esc(t("status." + i.status.code))}</span></div></div>`).join("")}</div>
+      <p class="muted small">Updated ${fmt(p.view.updated)} · read-only</p></div>`).join("");
+  $$("[data-uncare]").forEach((b) => b.onclick = async () => { await api(`/api/caring/${b.dataset.uncare}`, { method: "DELETE" }); loaders.family(); });
+};
+$("#family-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  busy(e.submitter, async () => {
+    await post("/api/caring", { link: $("#family-link").value, label: $("#family-label").value });
+    $("#family-link").value = ""; $("#family-label").value = ""; toast("Added"); loaders.family();
+  });
+});
+
+// ------------------------------------------------------------------ settings: alert contacts, language, password, data
+loaders.settings = async () => {
+  $("#lang2").value = lang;
+  $("#lang-note").textContent = I18N[lang]?.["note.english"] || "";
+  const c = await api("/api/contacts");
+  $("#twilio-note").innerHTML = c.twilio ? "" : `<div class="banner warn small">Text sending isn't connected on this server (no Twilio account in .env), so messages are recorded as a <b>dry run</b>: you can see exactly what would be sent below.</div>`;
+  $("#contact-list").innerHTML = c.contacts.map((x) => `<div class="dose-row"><div><b>${esc(x.name)}</b> <span class="muted">${esc(x.phone)}</span>
+      <div class="small muted">${[x.sms && t("settings.sms"), x.voice && t("settings.voice"), x.reminders && t("settings.reminders")].filter(Boolean).map(esc).join(" · ")}</div></div>
+      <div class="row" style="margin:0"><button class="btn" data-ctest="${x.id}" style="min-height:30px;padding:3px 10px;font-size:13px">${esc(t("settings.test"))}</button>
+      <button class="icon-btn" data-cdel="${x.id}" aria-label="Remove">✕</button></div></div>`).join("") || `<p class="muted small">No contacts yet.</p>`;
+  $("#message-list").innerHTML = c.messages.map((m) => `<div class="dose-row"><div>${fmt(m.created_at)} · <b>${esc(m.channel === "voice" ? "call" : "text")}</b> to ${esc(m.to_phone)} · ${esc(m.kind)}
+      <div class="muted">${esc(m.body)}</div></div><span class="pill ${m.status === "failed" ? "DO_NOT_USE" : m.status === "sent" ? "USE" : "CHECK"}">${esc(m.status.replace("_", " "))}</span></div>`).join("") || "None yet.";
+  $$("[data-ctest]").forEach((b) => b.onclick = (e) => busy(e.currentTarget, async () => { const r = await post(`/api/contacts/${b.dataset.ctest}/test`); toast(r.map((x) => `${x.channel}: ${x.status.replace("_", " ")}`).join(", ")); loaders.settings(); }));
+  $$("[data-cdel]").forEach((b) => b.onclick = async () => { await api(`/api/contacts/${b.dataset.cdel}`, { method: "DELETE" }); loaders.settings(); });
+};
+$("#lang2").addEventListener("change", (e) => setLang(e.target.value));
+$("#contact-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  busy(e.submitter, async () => {
+    await post("/api/contacts", { name: $("#c-name").value, phone: $("#c-phone").value, sms: $("#c-sms").checked, voice: $("#c-voice").checked, reminders: $("#c-rem").checked });
+    $("#c-phone").value = ""; $("#c-name").value = ""; toast("Contact added"); loaders.settings();
+  });
+});
+$("#pw-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  busy(e.submitter, async () => { await post("/api/account/password", { current: $("#pw-cur").value, new: $("#pw-new").value }); $("#pw-cur").value = ""; $("#pw-new").value = ""; toast("Password changed"); });
+});
+$("#del-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (!confirm("Delete your account and all your data permanently?")) return;
+  busy(e.submitter, async () => {
+    await api("/api/account", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: $("#del-confirm").value, password: $("#del-pw").value }) });
+    location.href = "/login";
+  });
+});
+
 // ------------------------------------------------------------------ account
 let me = null;
 async function signOut() { await post("/api/auth/logout"); location.href = "/login"; }
@@ -1024,6 +1144,9 @@ async function loadMe() {
   me = await api("/api/me");
   document.body.classList.toggle("pharmacist", me.role === "pharmacist");
   document.body.classList.toggle("owner", !!me.owner);
+  let stored = null;
+  try { stored = localStorage.getItem(LANG_KEY); } catch { /* storage blocked */ }
+  if (!stored && me.lang && me.lang !== lang) setLang(me.lang, false);
   $("#account").innerHTML = `<b>${esc(me.name)}${me.role === "pharmacist" ? `<span class="role-tag">Pharmacist</span>` : ""}</b>
     <span class="muted">${esc(me.email || "")}</span><br><button class="btn" id="signout">Sign out</button>`;
   $("#account-m").textContent = `Signed in as ${me.name}${me.email ? ` (${me.email})` : ""}`;
@@ -1052,5 +1175,5 @@ health();
 refreshBadge();
 if (!location.search.includes("nolive")) connectLive(); else $("#live").hidden = true;
 loadMe().then((u) => (u.role === "pharmacist" && !location.hash ? show("review") : null)).catch(() => {});
-loadItems().then(applyHash).catch((e) => { $("#item-list").innerHTML = `<div class="card"><p>${esc(e.message)}</p><p class="muted">Check .env and run scripts/setup_db.py.</p></div>`; });
+loadItems().then(() => { loadReminders(); return applyHash(); }).catch((e) => { $("#item-list").innerHTML = `<div class="card"><p>${esc(e.message)}</p><p class="muted">Check .env and run scripts/setup_db.py.</p></div>`; });
 addEventListener("resize", () => setDetailOpen($("#view-meds").classList.contains("detail-open")));

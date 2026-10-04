@@ -156,7 +156,7 @@ This is a decision-support prototype, not medical advice.
 |---|---|---|
 | Owner | `owner@lifelog.example` | Manu: 6 medicines with 14 days of history, doses, receipts, and the demo controls (only this account can use them) |
 | Customer | `customer@lifelog.example` | Alex: Dupixent, Humalog in use at room temperature, Repatha. Cannot see the owner's medicines |
-| Pharmacist | `pharmacist@lifelog.example` | The review queue: rules, care-checklist wording and heat-tolerance evidence for all 22 medicines |
+| Pharmacist | `pharmacist@lifelog.example` | The review queue: rules, care-checklist wording and heat-tolerance evidence for all 24 medicines |
 
 Email + password sign-in works for these accounts when you set `DEMO_OWNER_PASSWORD`, `DEMO_CUSTOMER_PASSWORD` and
 `DEMO_PHARMACIST_PASSWORD` in `.env` before running `scripts/setup_db.py` or `scripts/migrate.py` (passwords are
@@ -175,13 +175,14 @@ stored only as hashes and never committed). An existing account's password is ne
 - **Pharmacist review.** A pharmacist account sees every medicine's rules and the exact care-checklist wording patients
   get, and approves it or requests changes (with credentials and a note). Patients see "Rules and wording reviewed by …"
   or "Not yet reviewed by a pharmacist" on each medicine.
-- **Better heat-tolerance data.** Two of LIFELOG's 8-hour assumptions now have published evidence waiting for a
+- **Better heat-tolerance data.** Four of LIFELOG's 8-hour assumptions (EpiPen, Lantus, NovoLog, Humalog) now have published evidence waiting for a
   pharmacist. Nothing changes until it is approved; approval updates the medicine's rules and recalculates every
   patient's history in Tiger Data (full refresh of `readings_5m` and `readings_1d`, since the aggregate joins products).
 
   | Medicine | Evidence | Derived tolerance just above 30°C |
   |---|---|---|
   | EpiPen (epinephrine 1:1,000) | Grant et al., *Am J Emerg Med* 1994 (PMID 8179739): no significant loss after 12 weeks cycled to 70°C 8 h/day; Parish et al. 2016 systematic review (PMID 27221065) | 672 h at 70°C × 2⁴ = **10,752 h** (lower bound) |
+  | NovoLog (insulin aspart), Humalog (insulin lispro) | Silva-Jr et al., *Colloids Surf B* 2022;216:112566, as summarised in Cochrane CD015385 (2023): no detectable chemical degradation after 35 days at 37°C with weekly handling; potency not measured | 840 h at 37°C × 2^0.7 = **1,365 h** (lower bound; the pharmacist decides whether chemical stability is enough) |
   | Lantus (insulin glargine) | Human insulin lost 18% at 37°C over 28 days (Vimalavathini & Gitanjali 2009, via the 2023 review PMC10627263) | 5% loss threshold: 672 × 5/18 = 187 h at 37°C × 2^0.7 = **303 h** (extrapolated from human insulin: the pharmacist decides) |
 
   Both use the engine's doubling-per-10°C rule, which is itself an assumption and is shown with the evidence.
@@ -196,6 +197,32 @@ stored only as hashes and never committed). An existing account's password is ne
   Energy) can be added with `EXTRA_OUTAGE_FEEDS="Name:instanceId:viewId"`; `LIVE_OUTAGES=0` turns the import off.
   The demo storm scenario still works alongside it.
 
+## Reaching people who aren't watching an app
+
+- **Text and phone-call alerts.** Settings → add a phone number for yourself or a caregiver. Critical alerts (frozen,
+  above the label's limit, budget used up, power outage, expired, in-use period over, predicted excursion) are sent once
+  per alert by text, and by a phone call that reads the alert aloud if you ask for calls. Sent through Twilio's REST API
+  when `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM` are set; without them every message is recorded as
+  a **dry run** you can read in Settings → Messages sent.
+- **Refill and use-by reminders.** "Coming up" under My medicines lists every medicine whose use-by date (printed
+  expiry or in-use limit, whichever is first) is within 30 days, with a one-click refill letter draft (no AI needed,
+  with its exposure receipt). Texts go out 7, 3 and 1 days before, once each; the alert job adds "expires soon" a week
+  before the printed date.
+- **People I care for.** Paste a share link someone sent you and see their medicines, statuses and open alerts next to
+  your own (read-only; they can turn the link off at any time).
+- **"My power is out".** Utilities report outages per ZIP code. On Outage rescue, one tap confirms your home is out:
+  LIFELOG then applies the no-power warming model, the rescue list and the outage alerts to your home, with the
+  utility's restoration estimate when it has one. When a fridge medicine warms steadily inside a ZIP the utility reports,
+  a "possible outage" alert asks you to confirm.
+- **Languages.** The interface (navigation, buttons, statuses, section titles, reminders, sign-in) is in English, Arabic
+  (right-to-left), Spanish and Bengali, and the choice is saved to your account. Medicine names, label quotes and detailed
+  explanations stay in English, exactly as on the FDA label, and the app says so.
+- **Your account.** Settings → change password (signs out your other sessions), download everything LIFELOG holds about
+  you as a ZIP (account.json plus every reading as CSV), or delete your account and all its readings. Demo accounts
+  can't be deleted.
+- **Pharmacist audit log.** Every approval, request for changes and evidence decision is recorded with who and when; the
+  pharmacist view shows the history, and every exposure receipt shows who reviewed the medicine's rules.
+
 ## Safety switches
 - `GEMINI_DISABLED=1`: no Gemini request ever leaves the server (for testing without spending quota).
 - `LIVE_OUTAGES=0`: no requests to the utility outage map. `ENABLE_DEMO_LOGIN=0`: no demo sign-in buttons.
@@ -203,12 +230,12 @@ stored only as hashes and never committed). An existing account's password is ne
   `ALLOW_DEMO_RESET=1`. The button also asks for confirmation.
 
 ## Medicines and where their rules come from
-22 medicines are seeded, each from its manufacturer's FDA prescribing information, retrieved through
-[openFDA](https://open.fda.gov/apis/drug/label/) and linked to its DailyMed page in the app. The rules live in
+24 medicines are seeded, each from its manufacturer's FDA prescribing information, retrieved through
+[openFDA](https://open.fda.gov/apis/drug/label/) (Ozempic and Wegovy from [DailyMed](https://dailymed.nlm.nih.gov/), because openFDA only has tablet or repackager labels for them) and linked to its DailyMed page in the app. The rules live in
 `lifelog/medicines.py`; the label text they were taken from is saved in `data/labels/`.
 
 **How we keep it accurate.** Words in quotation marks must appear word-for-word in the label, and each allowance's
-temperature and number of days must appear in its own quote. `tests/test_labels.py` checks all 22 medicines
+temperature and number of days must appear in its own quote. `tests/test_labels.py` checks all 24 medicines
 (and that the checker catches a changed word or number); `scripts/verify_labels.py` re-downloads the labels and
 reports any manufacturer update. LIFELOG's own interpretations are kept outside the quotes, in `notes`, and flagged.
 
@@ -221,6 +248,8 @@ reports any manufacturer update. LIFELOG's own interpretations are kept outside 
 | Toujeo SoloStar, in use (insulin glargine U-300) | 2–8°C unopened | up to 30°C, 56 days (in use) | 56 days |
 | Mounjaro pen (tirzepatide) | 2–8°C | up to 30°C, 21 days total | |
 | Zepbound pen (tirzepatide) | 2–8°C | up to 30°C, 21 days total | |
+| Ozempic pen, in use (semaglutide) | 2–8°C before first use | 15–30°C, 56 days after first use | 56 days |
+| Wegovy single-dose pen (semaglutide) | 2–8°C | 8–30°C, up to 28 days | |
 | Trulicity pen (dulaglutide) | 2–8°C | up to 30°C, 14 days total | |
 | Victoza pen, in use (liraglutide) | 2–8°C | 15–30°C, 30 days | 30 days |
 | Enbrel SureClick (etanercept) | 2–8°C | 20–25°C, one period of 30 days | |
@@ -242,13 +271,12 @@ one turns the status to "Do not use" no matter how cold the medicine was kept.
 
 Where a label is silent (time tolerated above its highest limit, EpiPen and Gvoke excursion length, temperatures
 between the fridge range and a stated room range) LIFELOG says so in the app and uses a flagged assumption.
-Not seeded: injectable Ozempic and Wegovy, because openFDA currently returns only repackager or tablet labels for them;
-use "Add it by name" or a label photo.
+"Add by name" falls back to DailyMed the same way when openFDA has no manufacturer storage text.
 
 **Adding a medicine is checked the same way.** "Add by name" runs the same word-for-word check on whatever Gemini (or
 the no-AI reader) extracted and shows how many quotes were found in the label; anything not found must be confirmed
 by the person before tracking starts. The no-AI reader gets the same temperatures, allowances and freeze rule as the
-hand-checked rules for all 22 labels (tested).
+hand-checked rules for all 24 labels (tested).
 
 ### Add any medicine by name
 `POST /api/products/lookup {"name": "Trulicity"}`:

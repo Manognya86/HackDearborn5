@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import assistant, auth, config, db, engine, forecast_ml, gem, medicines, offline, realtime, seed, services, sim
+from . import assistant, auth, config, db, engine, forecast_ml, gem, medicines, notify, offline, realtime, seed, services, sim
 from .models import StabilityModel
 
 app = FastAPI(title="LIFELOG Home")
@@ -387,7 +387,7 @@ async def visual(item_id: int, photo: UploadFile = File(...), lang: str = "en"):
 
 
 @app.post("/api/items/{item_id}/letter")
-def letter(item_id: int, lang: str = "en"):
+def letter(item_id: int, lang: str = "en", ai: bool = True):
     d = _item_or_404(item_id)
     outage = db.one("""SELECT o.id, o.name, o.started_at, o.est_restore_at FROM outages o
                        JOIN users u ON ST_Contains(o.area, u.geom) JOIN items i ON i.user_id = u.id
@@ -401,6 +401,8 @@ def letter(item_id: int, lang: str = "en"):
            "outage": outage, "data_gaps": d["gaps"], "generated_at": services.now()}
     rc = services.create_receipt(d)          # pharmacists can verify the numbers in the letter
     ctx.update(receipt_code=rc["code"], receipt_url=f"/r/{rc['code']}")
+    if not ai:   # instant draft from the reminders panel, no AI needed
+        return {"letter": offline.refill_letter(ctx), "ai": False, "receipt": rc}
     try:
         return {"letter": gem.refill_letter(ctx, lang), "ai": True, "receipt": rc}
     except gem.GeminiUnavailable as e:
@@ -783,6 +785,175 @@ def _start_outages():
     import threading as _th
     if config.DATABASE_URL and config.LIVE_OUTAGES:
         _th.Thread(target=_outage_loop, daemon=True, name="live-outages").start()
+
+
+# ------------------------------------------------------------------ refill and use-by reminders
+@app.get("/api/reminders")
+def get_reminders(days: int = 30):
+    return services.reminders(db.me(), max(1, min(days, 365)))
+
+
+def _reminder_loop():
+    import time as _t
+    _t.sleep(30)
+    while True:
+        try:
+            notify.send_reminders()
+        except Exception:  # noqa: BLE001
+            pass
+        _t.sleep(3600)
+
+
+@app.on_event("startup")
+def _start_reminders():
+    import threading as _th
+    if config.DATABASE_URL:
+        _th.Thread(target=_reminder_loop, daemon=True, name="reminders").start()
+
+
+# ------------------------------------------------------------------ text and phone-call alerts
+class ContactIn(BaseModel):
+    name: str
+    phone: str
+    sms: bool = True
+    voice: bool = False
+    reminders: bool = True
+
+
+@app.get("/api/contacts")
+def list_contacts():
+    return {"contacts": db.query("SELECT * FROM alert_contacts WHERE user_id = %s AND active ORDER BY id", (db.me(),)),
+            "twilio": notify.configured(), "messages": notify.recent(db.me())}
+
+
+@app.post("/api/contacts")
+def add_contact(body: ContactIn):
+    try:
+        phone = notify.normalize_phone(body.phone)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    if not (body.sms or body.voice):
+        raise HTTPException(422, "Choose text messages, phone calls, or both.")
+    return db.one("""INSERT INTO alert_contacts (user_id, name, phone, sms, voice, reminders) VALUES (%s,%s,%s,%s,%s,%s)
+                     RETURNING *""", (db.me(), body.name.strip() or "Me", phone, body.sms, body.voice, body.reminders))
+
+
+@app.delete("/api/contacts/{contact_id}")
+def remove_contact(contact_id: int):
+    db.execute("UPDATE alert_contacts SET active = FALSE WHERE id = %s AND user_id = %s", (contact_id, db.me()))
+    return {"ok": True}
+
+
+@app.post("/api/contacts/{contact_id}/test")
+def test_contact(contact_id: int):
+    c = db.one("SELECT * FROM alert_contacts WHERE id = %s AND user_id = %s AND active", (contact_id, db.me()))
+    if not c:
+        raise HTTPException(404, "unknown contact")
+    body = "LIFELOG: test message. You'll get a text like this if a medicine freezes, overheats or runs out of safe life."
+    return [notify.deliver(c, ch, body, kind="test") for ch in ("sms", "voice") if c[ch]]
+
+
+# ------------------------------------------------------------------ caregivers: people I look after
+class CareIn(BaseModel):
+    link: str
+    label: str | None = None
+
+
+@app.get("/api/caring")
+def caring():
+    return services.care_people(db.me())
+
+
+@app.post("/api/caring")
+def add_caring(body: CareIn):
+    try:
+        return services.add_care_link(db.me(), body.link, body.label)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@app.delete("/api/caring/{link_id}")
+def remove_caring(link_id: int):
+    db.execute("DELETE FROM care_links WHERE id = %s AND caregiver_id = %s", (link_id, db.me()))
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ "My power is out"
+class PowerIn(BaseModel):
+    out: bool
+
+
+@app.get("/api/power")
+def power():
+    return services.power_status(db.me())
+
+
+@app.post("/api/power")
+def report_power(body: PowerIn):
+    return services.report_power(db.me(), body.out)
+
+
+# ------------------------------------------------------------------ account controls
+class PasswordIn(BaseModel):
+    current: str | None = None
+    new: str
+
+
+@app.post("/api/account/password")
+def change_password(body: PasswordIn, request: Request):
+    u = _user(request)
+    with db.system():
+        row = db.one("SELECT password_hash FROM users WHERE id = %s", (u["id"],))
+        if row["password_hash"] and not auth.verify_password(body.current or "", row["password_hash"]):
+            raise HTTPException(403, "Your current password is wrong.")
+        if len(body.new) < 8:
+            raise HTTPException(422, "Use at least 8 characters.")
+        db.execute("UPDATE users SET password_hash = %s WHERE id = %s", (auth.hash_password(body.new), u["id"]))
+        # sign out every other session of this account
+        db.execute("DELETE FROM sessions WHERE user_id = %s AND token <> %s", (u["id"], request.cookies.get(auth.COOKIE)))
+    return {"ok": True}
+
+
+@app.get("/api/account/export")
+def export_account(request: Request):
+    u = _user(request)
+    return Response(services.export_account(u["id"]), media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="lifelog-my-data.zip"'})
+
+
+class DeleteIn(BaseModel):
+    confirm: str
+    password: str | None = None
+
+
+@app.delete("/api/account")
+def delete_account(body: DeleteIn, request: Request):
+    u = _user(request)
+    if body.confirm != "DELETE":
+        raise HTTPException(422, 'Type DELETE to confirm.')
+    if (u.get("email") or "").lower() in {e for e, _ in config.DEMO_ACCOUNTS.values()}:
+        raise HTTPException(403, "Demo accounts can't be deleted. Create your own account to try this.")
+    with db.system():
+        row = db.one("SELECT password_hash FROM users WHERE id = %s", (u["id"],))
+    if row and row["password_hash"] and not auth.verify_password(body.password or "", row["password_hash"]):
+        raise HTTPException(403, "Your password is wrong.")
+    res = services.delete_account(u["id"])
+    out = JSONResponse(res)
+    out.delete_cookie(auth.COOKIE, path="/")
+    return out
+
+
+class LangIn(BaseModel):
+    lang: str
+
+
+@app.post("/api/account/lang")
+def set_lang(body: LangIn, request: Request):
+    if body.lang not in ("en", "ar", "es", "bn"):
+        raise HTTPException(422, "Language must be en, ar, es or bn.")
+    with db.system():
+        db.execute("UPDATE users SET lang = %s WHERE id = %s", (body.lang, _user(request)["id"]))
+    return {"ok": True}
 
 
 # ------------------------------------------------------------------ exposure receipts (verifiable)

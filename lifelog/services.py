@@ -203,6 +203,8 @@ def outages_geojson() -> dict:
     rows = db.query("""SELECT id, name, est_restore_at, indoor_temp_c, source, customers_out, etr_known, updated_at,
                               ST_AsGeoJSON(area)::json AS geom
                        FROM outages WHERE active""")
+    for r in rows:
+        r["name"] = r["name"].split(" [user ")[0]
     return {"type": "FeatureCollection", "features": [
         {"type": "Feature", "geometry": r.pop("geom"), "properties": r} for r in rows]}
 
@@ -245,7 +247,7 @@ def rescue() -> dict:
             "warming_model": f"measured: tau {tau:.1f} h" if tau else f"assumed: tau {engine.FRIDGE_TAU_H:.0f} h"
                              if s["current_temp"] is not None and s["current_temp"] < r["indoor_temp_c"] - 5 else "at room temperature",
             "at_risk": hl is not None and hl < hrs_restore,
-            "refuges": r["refuges"] or [], "outage": r["outage"],
+            "refuges": r["refuges"] or [], "outage": r["outage"].split(" [user ")[0],
         })
     people.sort(key=lambda p: (not p["at_risk"], p["hours_left"] if p["hours_left"] is not None else 1e9))
     users = db.query("""SELECT id, name, lat, lon, can_host, (id = %s) AS is_me FROM users
@@ -510,6 +512,36 @@ def openfda_lookup(name: str) -> dict | None:
                                 f"prescribing information, FDA label version {eff[:4]}-{eff[4:6]}-{eff[6:]}",
                 "source_url": f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={lab.get('set_id')}",
             }
+    return dailymed_lookup(name)
+
+
+REPACKAGERS = ("A-S MEDICATION", "PROFICIENT RX", "HENRY SCHEIN", "PD-RX", "REMEDYREPACK", "QUALITY CARE",
+               "BRYANT RANCH", "DIRECT RX", "DIRECT_RX", "NUCARE", "PREFERRED PHARMACEUTICALS", "MEDSOURCE", "RPK")
+
+
+def dailymed_lookup(name: str) -> dict | None:
+    """openFDA had no manufacturer storage text (e.g. Ozempic, Wegovy injections): read the label from DailyMed,
+    skipping repackagers, whose labels usually leave the storage details out."""
+    import re
+
+    from . import dailymed
+    try:
+        rows = [r for r in dailymed.search(name.strip()) if not any(x in r["title"].upper() for x in REPACKAGERS)]
+        for row in rows[:5]:
+            lab = dailymed.label(row["set_id"])
+            text = lab["fields"].get("storage_and_handling") or lab["fields"].get("how_supplied") or ""
+            if len(text) < 200 or not re.search(r"refrigerat|store (at|between|in)|°C", text, re.I):
+                continue
+            start = 0 if len(text) <= 6000 else max(text.lower().find("storage") - 300, 0)
+            eff = lab["effective_time"]
+            brand = row["title"].split("(")[0].strip().title()
+            return {"brand": brand, "generic": (re.search(r"\(([^)]+)\)", row["title"]) or [None, ""])[1].lower(),
+                    "manufacturer": row["title"].rsplit("[", 1)[-1].rstrip("]"), "set_id": row["set_id"], "effective": eff,
+                    "text": text[start:start + 6000], "route": "",
+                    "source_label": f"{brand} prescribing information (DailyMed), FDA label version {eff[:4]}-{eff[4:6]}-{eff[6:]}",
+                    "source_url": f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={row['set_id']}"}
+    except Exception:  # noqa: BLE001  network or format problems: fall through to Gemini web search
+        return None
     return None
 
 
@@ -600,7 +632,8 @@ def create_receipt(d: dict) -> dict:
                "since": item["started_at"].isoformat(), "remaining": round(1 - snap["used"], 4), **snap,
                "label": {"target_quote": m.get("target_quote"),
                          "bands": [q for q in dict.fromkeys(b["quote"] for b in m.get("bands", [])) if q != m.get("target_quote")]},
-               "source_url": item.get("source_url")}
+               "source_url": item.get("source_url"),
+               "rules_review": rules_review(item["product_id"])}
     db.execute("""INSERT INTO receipts (code, item_id, as_of, payload, digest) VALUES (%s,%s,%s,%s,%s)
                   ON CONFLICT (code) DO NOTHING""", (code, item["id"], as_of, json.dumps(payload, default=str), digest))
     return {"code": code, "as_of": as_of, "digest": digest, "url": f"/r/{code}"}
@@ -744,14 +777,27 @@ def review_queue() -> list[dict]:
         if sample:
             state = {"zone": "Labeled storage", "remaining": 1.0, "stale_minutes": 0}
             checklist = [c["text"] for c in precautions({**sample, "model": p["model"]}, state, [], []) if c["level"] == "info"]
-        out.append({**p, "checklist": checklist, "evidence": evidence_for(p["id"]), "review": review_status(p["id"])})
+        out.append({**p, "checklist": checklist, "evidence": evidence_for(p["id"]), "review": review_status(p["id"]),
+                    "history": audit_history(p["id"], 10)})
     return out
 
 
+def audit(actor: dict, action: str, product_id: int, detail: dict) -> None:
+    db.execute("INSERT INTO audit_log (actor_id, actor, action, product_id, detail) VALUES (%s, %s, %s, %s, %s)",
+               (actor.get("id"), actor.get("name") or "unknown", action, product_id, json.dumps(detail, default=str)))
+
+
+def audit_history(product_id: int, limit: int = 20) -> list[dict]:
+    return db.query("""SELECT actor, action, detail, created_at FROM audit_log WHERE product_id = %s
+                       ORDER BY created_at DESC, id DESC LIMIT %s""", (product_id, limit))
+
+
 def submit_review(product_id: int, reviewer: dict, status: str, credentials: str | None, note: str | None) -> dict:
-    return db.one("""INSERT INTO reviews (product_id, status, reviewer_id, reviewer, credentials, note)
-                     VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
-                  (product_id, status, reviewer["id"], reviewer["name"], credentials, note))
+    row = db.one("""INSERT INTO reviews (product_id, status, reviewer_id, reviewer, credentials, note)
+                    VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+                 (product_id, status, reviewer["id"], reviewer["name"], credentials, note))
+    audit(reviewer, f"review_{status}", product_id, {"credentials": credentials, "note": note})
+    return row
 
 
 def decide_evidence(evidence_id: int, approve: bool, reviewer: dict) -> dict:
@@ -762,6 +808,9 @@ def decide_evidence(evidence_id: int, approve: bool, reviewer: dict) -> dict:
         return {}
     db.execute("UPDATE evidence SET status = %s, reviewed_by = %s, reviewed_at = now() WHERE id = %s",
                ("approved" if approve else "rejected", reviewer["name"], evidence_id))
+    audit(reviewer, "evidence_approved" if approve else "evidence_rejected", ev["product_id"],
+          {"evidence_id": evidence_id, "field": ev["field"], "from": ev["current_value"], "to": ev["proposed_value"],
+           "citation": ev["citation"]})
     if approve:
         p = db.one("SELECT model FROM products WHERE id = %s", (ev["product_id"],))
         m = p["model"]
@@ -874,6 +923,153 @@ def import_live_outages() -> dict:
 
 def outage_feed_status() -> dict:
     return dict(_outage_state, feeds=[f[0] for f in config.OUTAGE_FEEDS], enabled=config.LIVE_OUTAGES)
+
+
+# ------------------------------------------------------------------ who checked this medicine's rules (for receipts)
+def rules_review(product_id: int) -> dict:
+    r = review_status(product_id)
+    return {"review": {k: r[k] for k in ("status", "reviewer", "credentials", "created_at")} if r else None,
+            "decisions": [{"by": h["actor"], "action": h["action"], "at": h["created_at"],
+                           "detail": {k: v for k, v in (h["detail"] or {}).items() if k in ("from", "to", "citation", "note")}}
+                          for h in audit_history(product_id, 10)]}
+
+
+# ------------------------------------------------------------------ refill and use-by reminders
+def reminders(user_id: int, horizon_days: int = 30) -> list[dict]:
+    """Every medicine whose use-by date (printed expiry or in-use limit, whichever is first) is within the horizon,
+    soonest first, with what to do about it."""
+    out = []
+    for i in list_items(user_id):
+        d = i["dates"]
+        if not d.get("use_by") or d["days_left"] > horizon_days:
+            continue
+        days = d["days_left"]
+        out.append({"item_id": i["id"], "nickname": i["nickname"], "product": i["product_name"],
+                    "use_by": d["use_by_date"], "reason": d["use_by_reason"], "days_left": round(days, 1),
+                    "urgency": "past" if days < 0 else "now" if days <= 3 else "soon" if days <= 7 else "later"})
+    return sorted(out, key=lambda r: r["days_left"])
+
+
+# ------------------------------------------------------------------ caregivers: people I look after
+def _share_token(link: str) -> str:
+    import re
+    link = (link or "").strip()
+    m = re.search(r"/s/([A-Za-z0-9_\-]+)", link)
+    return m.group(1) if m else link
+
+
+def add_care_link(caregiver_id: int, link: str, label: str | None) -> dict:
+    token = _share_token(link)
+    with db.system():
+        sh = db.one("SELECT user_id FROM shares WHERE token = %s AND NOT revoked", (token,))
+    if not sh:
+        raise ValueError("That share link isn't active. Ask for a new one.")
+    if sh["user_id"] == caregiver_id:
+        raise ValueError("That's your own share link.")
+    return db.one("""INSERT INTO care_links (caregiver_id, share_token, label) VALUES (%s, %s, %s)
+                     ON CONFLICT (caregiver_id, share_token) DO UPDATE SET label = coalesce(EXCLUDED.label, care_links.label)
+                     RETURNING id, label, created_at""", (caregiver_id, token, (label or "").strip() or None))
+
+
+def care_people(caregiver_id: int) -> list[dict]:
+    out = []
+    for link in db.query("SELECT id, share_token, label FROM care_links WHERE caregiver_id = %s ORDER BY id", (caregiver_id,)):
+        with db.system():   # the share token is the permission, exactly as on the caregiver page
+            view = shared_view(link["share_token"])
+        out.append({"id": link["id"], "label": link["label"], "active": view is not None, "view": view})
+    return out
+
+
+# ------------------------------------------------------------------ "My power is out" (confirms a ZIP-level report)
+def power_status(user_id: int) -> dict:
+    with db.system():
+        mine = db.one("""SELECT o.id, o.started_at, o.est_restore_at FROM outages o
+                         WHERE o.active AND o.source = 'report' AND o.name LIKE %s ORDER BY o.id DESC LIMIT 1""",
+                      (f"%[user {user_id}]%",))
+        live = db.one("""SELECT o.name, o.customers_out, o.etr_known, o.est_restore_at, o.updated_at FROM outages o
+                         JOIN users u ON ST_Contains(o.area, u.geom)
+                         WHERE o.active AND o.source LIKE '%%-live' AND u.id = %s LIMIT 1""", (user_id,))
+    return {"reported_out": bool(mine), "since": mine["started_at"] if mine else None,
+            "est_restore_at": mine["est_restore_at"] if mine else None, "utility_area": live}
+
+
+def report_power(user_id: int, power_out: bool) -> dict:
+    """Out: a small outage area around this home (source 'report'), so the no-power warming model, the rescue list
+    and the alerts apply to it. Restoration comes from the utility's estimate when it has one, else 4 hours."""
+    from . import forecast_ml
+    with db.system():
+        db.execute("UPDATE outages SET active = FALSE WHERE source = 'report' AND name LIKE %s", (f"%[user {user_id}]%",))
+        outage_id = None
+        if power_out:
+            live = db.one("""SELECT o.est_restore_at FROM outages o JOIN users u ON ST_Contains(o.area, u.geom)
+                             WHERE o.active AND o.source LIKE '%%-live' AND o.etr_known AND u.id = %s LIMIT 1""", (user_id,))
+            u = db.one("SELECT lat, lon FROM users WHERE id = %s", (user_id,))
+            wx = forecast_ml.outdoor(u["lat"], u["lon"])
+            past = [v for t, v in wx.items() if t <= now()]
+            indoor = max(20.0, past[-1]) if past else 22.0
+            outage_id = db.one("""
+                INSERT INTO outages (name, area, started_at, est_restore_at, indoor_temp_c, source, active, updated_at)
+                SELECT %s, ST_Buffer(u.geom::geography, 150)::geometry, now(), coalesce(%s, now() + INTERVAL '4 hours'),
+                       %s, 'report', TRUE, now()
+                FROM users u WHERE u.id = %s RETURNING id""",
+                (f"Power out at home (reported) [user {user_id}]", live["est_restore_at"] if live else None,
+                 round(indoor, 1), user_id))["id"]
+        db.execute("INSERT INTO power_reports (user_id, power_out, outage_id) VALUES (%s, %s, %s)", (user_id, power_out, outage_id))
+    check_alerts()
+    return power_status(user_id)
+
+
+# ------------------------------------------------------------------ account: export and delete
+def export_account(user_id: int) -> bytes:
+    """Everything LIFELOG holds about this account: a ZIP with account.json and one CSV of readings per medicine."""
+    import csv
+    import io
+    import zipfile
+    with db.system():
+        user = db.one("SELECT id, name, email, role, credentials, lat, lon, lang FROM users WHERE id = %s", (user_id,))
+        items_ = db.query("""SELECT i.*, p.name AS product_name, p.model, p.source_label, p.source_url FROM items i
+                             JOIN products p ON p.id = i.product_id WHERE i.user_id = %s ORDER BY i.id""", (user_id,))
+        ids = [i["id"] for i in items_] or [0]
+        data = {
+            "exported_at": now(), "account": user, "medicines": items_,
+            "doses": db.query("SELECT * FROM doses WHERE item_id = ANY(%s) ORDER BY taken_at", (ids,)),
+            "alerts": db.query("SELECT * FROM alerts WHERE item_id = ANY(%s) ORDER BY created_at", (ids,)),
+            "receipts": db.query("SELECT code, item_id, as_of, payload, digest, created_at FROM receipts WHERE item_id = ANY(%s)", (ids,)),
+            "share_links": db.query("SELECT token, label, revoked, created_at FROM shares WHERE user_id = %s", (user_id,)),
+            "alert_contacts": db.query("SELECT * FROM alert_contacts WHERE user_id = %s", (user_id,)),
+            "messages_sent": db.query("SELECT * FROM notifications WHERE user_id = %s ORDER BY id", (user_id,)),
+            "people_i_care_for": db.query("SELECT label, share_token, created_at FROM care_links WHERE caregiver_id = %s", (user_id,)),
+            "power_reports": db.query("SELECT * FROM power_reports WHERE user_id = %s ORDER BY id", (user_id,)),
+            "devices": db.query("SELECT label, item_id, created_at, last_seen, readings, revoked FROM devices WHERE item_id = ANY(%s)", (ids,)),
+            "webhooks": db.query("SELECT url, active, created_at FROM webhooks WHERE user_id = %s", (user_id,)),
+        }
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("account.json", json.dumps(data, default=str, indent=1))
+            for i in items_:
+                s = io.StringIO()
+                w = csv.writer(s)
+                w.writerow(["time_utc", "temp_c", "humidity", "source"])
+                for r in db.query("SELECT ts, temp_c, humidity, source FROM readings WHERE item_id = %s ORDER BY ts", (i["id"],)):
+                    w.writerow([r["ts"].isoformat(), r["temp_c"], r["humidity"], r["source"]])
+                z.writestr(f"readings/medicine_{i['id']}.csv", s.getvalue())
+    return buf.getvalue()
+
+
+def delete_account(user_id: int) -> dict:
+    """Delete the account and everything attached to it, including the raw readings (the readings table has no
+    foreign key, so they are removed explicitly) and the rollups built from them."""
+    with db.system():
+        ids = [r["id"] for r in db.query("SELECT id FROM items WHERE user_id = %s", (user_id,))]
+        span = db.one("SELECT min(ts) AS a, max(ts) AS b FROM readings WHERE item_id = ANY(%s)", (ids or [0],))
+        n = db.one("SELECT count(*) AS n FROM readings WHERE item_id = ANY(%s)", (ids or [0],))["n"]
+        db.execute("DELETE FROM readings WHERE item_id = ANY(%s)", (ids or [0],))
+        db.execute("DELETE FROM ingest_log WHERE item_id = ANY(%s)", (ids or [0],))
+        db.execute("UPDATE outages SET active = FALSE WHERE source = 'report' AND name LIKE %s", (f"%[user {user_id}]%",))
+        db.execute("DELETE FROM users WHERE id = %s", (user_id,))   # cascades medicines, doses, alerts, receipts, links
+    if span and span["a"]:
+        db.refresh_readings(span["a"], span["b"])
+    return {"deleted": True, "medicines": len(ids), "readings": n}
 
 
 # ------------------------------------------------------------------ caregiver share links

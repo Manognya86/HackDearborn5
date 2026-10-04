@@ -39,7 +39,7 @@ def session_user(token: str | None) -> dict | None:
     if not token:
         return None
     with db.system():
-        return db.one("""SELECT u.id, u.name, u.email, u.role, u.credentials FROM sessions s JOIN users u ON u.id = s.user_id
+        return db.one("""SELECT u.id, u.name, u.email, u.role, u.credentials, u.lang FROM sessions s JOIN users u ON u.id = s.user_id
                          WHERE s.token = %s AND s.expires_at > now()""", (token,))
 
 

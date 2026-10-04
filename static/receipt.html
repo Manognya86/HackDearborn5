@@ -48,6 +48,10 @@ fetch(`/api/receipts/${encodeURIComponent(code)}`).then(async (r) => {
       <h3>The label</h3>
       ${[p.label?.target_quote, ...(p.label?.bands || [])].filter(Boolean).map((q) => `<blockquote>${esc(q)}</blockquote>`).join("")}
       ${p.source_url ? `<p class="small"><a href="${esc(p.source_url)}" target="_blank" rel="noopener">Official FDA label (DailyMed)</a></p>` : ""}
+      <h3>Pharmacist review of these rules</h3>
+      ${p.rules_review?.review ? `<p>${p.rules_review.review.status === "approved" ? "✓ Approved" : "Changes requested"} by <b>${esc(p.rules_review.review.reviewer)}</b>${p.rules_review.review.credentials ? ", " + esc(p.rules_review.review.credentials) : ""} on ${when(p.rules_review.review.created_at)}.</p>`
+        : `<p class="muted">Not reviewed by a pharmacist when this receipt was made.</p>`}
+      ${(p.rules_review?.decisions || []).length ? `<ul class="small">${p.rules_review.decisions.map((h) => `<li>${when(h.at)} · ${esc(h.by)} · ${esc(h.action.replace(/_/g, " "))}${h.detail?.to ? ` (heat tolerance ${h.detail.from} h → ${(+h.detail.to).toLocaleString()} h; ${esc(h.detail.citation || "")})` : ""}${h.detail?.note ? `: "${esc(h.detail.note)}"` : ""}</li>`).join("")}</ul>` : ""}
       <p class="digest">SHA-256: ${esc(d.digest)}</p>
     </div>`;
 }).catch((e) => { document.getElementById("body").innerHTML = `<div class="card"><p>${esc(e.message)}</p></div>`; });

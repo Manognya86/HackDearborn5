@@ -15,7 +15,25 @@ HISTORY_DAYS = 14
 
 # Published heat-tolerance evidence that would replace LIFELOG's 8-hour assumption. Proposed only: nothing changes
 # until a pharmacist approves it in the Review view. Derivations use the same doubling-per-10°C rule as the engine.
+_SILVA = {
+    "citation": "Silva-Jr H et al., Formation of subvisible particles in commercial insulin formulations, Colloids Surf B "
+                "Biointerfaces 2022;216:112566 (doi 10.1016/j.colsurfb.2022.112566), as summarised in Cochrane Database "
+                "Syst Rev 2023;CD015385 (PMC10627263)",
+    "url": "https://doi.org/10.1016/j.colsurfb.2022.112566",
+    "derivation": "35 days × 24 h = 840 h at 37°C with no detectable chemical degradation. At the engine's doubling per 10°C, "
+                  "840 h at 37°C equals 840 × 2^(7/10) = 1,365 h just above 30°C. Treated as a lower bound. Potency itself "
+                  "was not measured, and subvisible particles formed at both 4°C and 37°C: the pharmacist decides whether "
+                  "chemical stability is enough.",
+}
 EVIDENCE = {
+    "novolog": {**_SILVA, "proposed": 1365.0,
+                "finding": "Insulin aspart (and lispro), handled weekly and stored at 37°C for 35 days, showed no oxidation, "
+                           "deamidation or other detectable degradation by mass spectrometry; subvisible particles formed at "
+                           "both 4°C and 37°C."},
+    "humalog": {**_SILVA, "proposed": 1365.0,
+                "finding": "Insulin lispro (and aspart), handled weekly and stored at 37°C for 35 days, showed no oxidation, "
+                           "deamidation or other detectable degradation by mass spectrometry; subvisible particles formed at "
+                           "both 4°C and 37°C."},
     "epi": {
         "proposed": 10752.0,
         "citation": "Grant TA et al., Am J Emerg Med 1994;12(3):319-22 (PMID 8179739); Parish HG et al., "
@@ -482,7 +500,25 @@ def ensure_accounts(t_end: datetime | None = None) -> dict:
             if row and pw and not row["password_hash"]:
                 db.execute("UPDATE users SET password_hash = %s WHERE id = %s", (auth.hash_password(pw), row["id"]))
             out[role] = {"email": email, "password_login": bool(pw)}
+        _demo_links(config.DEMO_ACCOUNTS["owner"][0], config.DEMO_ACCOUNTS["customer"][0])
     return out
+
+
+def _demo_links(owner_email: str, customer_email: str) -> None:
+    """The owner gets a text-alert contact on a fictional 555-01xx number (messages are recorded as a dry run
+    without Twilio), and the customer looks after the owner through a share link: the caregiver view."""
+    import secrets
+    owner = db.one("SELECT id FROM users WHERE lower(email) = %s", (owner_email,))
+    cust = db.one("SELECT id FROM users WHERE lower(email) = %s", (customer_email,))
+    if not owner or not cust:
+        return
+    if not db.one("SELECT 1 AS x FROM alert_contacts WHERE user_id = %s", (owner["id"],)):
+        db.execute("""INSERT INTO alert_contacts (user_id, name, phone, sms, voice, reminders)
+                      VALUES (%s, 'Manu (demo phone)', '+13135550100', TRUE, TRUE, TRUE)""", (owner["id"],))
+    if not db.one("SELECT 1 AS x FROM care_links WHERE caregiver_id = %s", (cust["id"],)):
+        token = secrets.token_urlsafe(16)
+        db.execute("INSERT INTO shares (token, user_id, label) VALUES (%s, %s, 'For Alex (caregiver demo)')", (token, owner["id"]))
+        db.execute("INSERT INTO care_links (caregiver_id, share_token, label) VALUES (%s, %s, 'Manu')", (cust["id"], token))
 
 
 def _customer_medicines(user_id: int, t_end: datetime) -> None:

@@ -166,7 +166,7 @@ def parse_label_text(name: str, text: str) -> dict:
         tmin, tmax = 2.0, 8.0
     bands = []
     for s_ in sentences:
-        m_ = re.search(r"room temperature|unrefrigerated|out of refrigeration|removed from the refrigerator", s_, re.I)
+        m_ = re.search(r"room temperature|unrefrigerated|out of refrigeration|removed from the refrigerator|can be kept|can be stored for|may be kept", s_, re.I)
         if not m_:
             continue
         near = s_[m_.start():m_.start() + 220]   # tables flatten into one long "sentence": read next to the phrase

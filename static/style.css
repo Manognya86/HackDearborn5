@@ -336,3 +336,16 @@ body.pharmacist .pharm-only { display: flex !important; }
 .demo-accounts .btn span { font-weight: 400; font-size: 13px; opacity: .85; }
 .owner-only { display: none !important; }
 body.owner .owner-only { display: flex !important; }
+
+/* ---------------------------------------------------------------- reminders, power report, danger button */
+.reminders { margin-top: 14px; grid-column: 1 / -1; }
+.rem-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.rem-row:last-of-type { border-bottom: 0; }
+.rem-row.now b, .rem-row.past b { color: var(--bad); }
+.rem-row.soon b { color: var(--warn); }
+.power { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 10px;
+  border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); }
+.power.out { background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+.btn.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+.toggle { display: inline-flex; align-items: center; gap: 6px; }
+html[dir="rtl"] .med, html[dir="rtl"] .hero, html[dir="rtl"] .row { direction: rtl; }

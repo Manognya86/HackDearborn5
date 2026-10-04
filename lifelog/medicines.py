@@ -103,6 +103,22 @@ PRODUCTS = {
         freeze_quote="Do not freeze ZEPBOUND. Do not use ZEPBOUND if frozen.",
         discard=["Discard single-dose pen and single-dose vial after a total of 21 days at room temperature.",
                  "Protect ZEPBOUND from heat and light."]),
+    "ozempic": _model(   # label from DailyMed: openFDA has only tablet and repackager labels for Ozempic
+        "Ozempic pen, in use (semaglutide)", "multi-dose pen", 2, 8,
+        "Prior to first use, the OZEMPIC pen should be stored in a refrigerator between 2°C to 8°C (36°F to 46°F).",
+        [_band(ROOM, 8, 30, 56 * 24, "After first use of the OZEMPIC pen, the pen can be stored for 56 days at controlled room "
+                                    "temperature 15°C to 30°C (59°F to 86°F) or in a refrigerator 2°C to 8°C (36°F to 46°F).")],
+        freeze_quote="Do not freeze OZEMPIC and do not use OZEMPIC if it has been frozen.",
+        discard=["OZEMPIC should be protected from excessive heat and sunlight.", "Keep the pen cap on when not in use."],
+        notes="The label gives 15–30°C after first use; LIFELOG applies the same allowance to 8–15°C.", in_use=56),
+    "wegovy": _model(    # label from DailyMed, as for Ozempic
+        "Wegovy single-dose pen (semaglutide)", "single-dose pen", 2, 8,
+        "Store the WEGOVY prefilled single-dose pen or single-dose syringe in the refrigerator from 2°C to 8°C (36°F to 46°F).",
+        [_band(ROOM, 8, 30, 28 * 24, "If needed, prior to the pen or syringe cap removal, the pen can be kept from 8°C to 30°C "
+                                    "(46°F to 86°F) up to 28 days.")],
+        freeze_quote="Do not freeze WEGOVY and do not use if it has been frozen.",
+        discard=["Protect WEGOVY injection from light.",
+                 "WEGOVY injection must be kept in the original carton until time of administration."]),
     "trulicity": _model(
         "Trulicity pen (dulaglutide)", "single-dose pen", 2, 8,
         "Store TRULICITY in the refrigerator at 36°F to 46°F (2°C to 8°C).",
@@ -234,12 +250,12 @@ PRODUCTS = {
 }
 
 BRANDS = {"insulin": "LANTUS", "novolog": "NOVOLOG", "tresiba": "TRESIBA", "humalog": "HUMALOG", "toujeo": "TOUJEO",
-          "glp1": "MOUNJARO", "zepbound": "ZEPBOUND", "trulicity": "TRULICITY", "victoza": "VICTOZA", "biologic": "ENBREL",
+          "glp1": "MOUNJARO", "zepbound": "ZEPBOUND", "ozempic": "OZEMPIC", "wegovy": "WEGOVY", "trulicity": "TRULICITY", "victoza": "VICTOZA", "biologic": "ENBREL",
           "humira": "HUMIRA", "dupixent": "DUPIXENT", "stelara": "STELARA", "repatha": "REPATHA", "praluent": "PRALUENT",
           "aimovig": "AIMOVIG", "emgality": "EMGALITY", "prolia": "PROLIA", "forteo": "FORTEO", "epi": "EpiPen",
           "gvoke": "GVOKE", "xalatan": "XALATAN"}
 SHORT = {"insulin": "Lantus pen", "novolog": "NovoLog FlexPen", "tresiba": "Tresiba pen", "humalog": "Humalog KwikPen",
-         "toujeo": "Toujeo pen", "glp1": "Mounjaro pen", "zepbound": "Zepbound pen", "trulicity": "Trulicity pen",
+         "toujeo": "Toujeo pen", "glp1": "Mounjaro pen", "zepbound": "Zepbound pen", "ozempic": "Ozempic pen", "wegovy": "Wegovy pen", "trulicity": "Trulicity pen",
          "victoza": "Victoza pen", "biologic": "Enbrel SureClick", "humira": "Humira Pen", "dupixent": "Dupixent pen",
          "stelara": "Stelara syringe", "repatha": "Repatha SureClick", "praluent": "Praluent pen", "aimovig": "Aimovig SureClick",
          "emgality": "Emgality pen", "prolia": "Prolia syringe", "forteo": "Forteo pen", "epi": "EpiPen", "gvoke": "Gvoke HypoPen",

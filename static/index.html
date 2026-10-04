@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="/static/style.css?v=13">
+<link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -44,20 +44,22 @@
   <aside class="sidebar" aria-label="Main navigation">
     <div class="brand"><img src="/static/icon.svg" alt="" width="28" height="28"><span>LIFELOG</span></div>
     <nav id="nav">
-      <button data-view="review" class="pharm-only"><svg><use href="#i-check"/></svg><span>Pharmacist review</span></button>
-      <button data-view="meds" class="active"><svg><use href="#i-pill"/></svg><span>My medicines</span></button>
-      <button data-view="alerts"><svg><use href="#i-bell"/></svg><span>Alerts</span><b id="alert-count" class="badge" hidden></b></button>
-      <button data-view="ask"><svg><use href="#i-chat"/></svg><span>Ask LIFELOG</span></button>
-      <button data-view="rescue"><svg><use href="#i-bolt"/></svg><span>Outage rescue</span></button>
-      <div class="nav-sep">Tools</div>
-      <button data-view="add"><svg><use href="#i-plus"/></svg><span>Add medicine</span></button>
-      <button data-view="voice"><svg><use href="#i-mic"/></svg><span>Voice report</span></button>
-      <button data-view="trip"><svg><use href="#i-plane"/></svg><span>Trip check</span></button>
-      <button data-view="porch"><svg><use href="#i-sun"/></svg><span>Porch heat</span></button>
-      <div class="nav-sep">Behind the scenes</div>
-      <button data-view="tiger"><svg><use href="#i-db"/></svg><span>Under the hood</span></button>
-      <button data-view="dev"><svg><use href="#i-file"/></svg><span>For developers</span></button>
-      <button data-view="demo" class="owner-only"><svg><use href="#i-sliders"/></svg><span>Demo controls</span></button>
+      <button data-view="review" class="pharm-only"><svg><use href="#i-check"/></svg><span data-i18n="nav.review">Pharmacist review</span></button>
+      <button data-view="meds" class="active"><svg><use href="#i-pill"/></svg><span data-i18n="nav.meds">My medicines</span></button>
+      <button data-view="alerts"><svg><use href="#i-bell"/></svg><span data-i18n="nav.alerts">Alerts</span><b id="alert-count" class="badge" hidden></b></button>
+      <button data-view="ask"><svg><use href="#i-chat"/></svg><span data-i18n="nav.ask">Ask LIFELOG</span></button>
+      <button data-view="rescue"><svg><use href="#i-bolt"/></svg><span data-i18n="nav.rescue">Outage rescue</span></button>
+      <button data-view="family"><svg><use href="#i-pill"/></svg><span data-i18n="nav.family">People I care for</span></button>
+      <div class="nav-sep" data-i18n="nav.tools">Tools</div>
+      <button data-view="add"><svg><use href="#i-plus"/></svg><span data-i18n="nav.add">Add medicine</span></button>
+      <button data-view="voice"><svg><use href="#i-mic"/></svg><span data-i18n="nav.voice">Voice report</span></button>
+      <button data-view="trip"><svg><use href="#i-plane"/></svg><span data-i18n="nav.trip">Trip check</span></button>
+      <button data-view="porch"><svg><use href="#i-sun"/></svg><span data-i18n="nav.porch">Porch heat</span></button>
+      <div class="nav-sep" data-i18n="nav.behind">Behind the scenes</div>
+      <button data-view="tiger"><svg><use href="#i-db"/></svg><span data-i18n="nav.tiger">Under the hood</span></button>
+      <button data-view="dev"><svg><use href="#i-file"/></svg><span data-i18n="nav.dev">For developers</span></button>
+      <button data-view="demo" class="owner-only"><svg><use href="#i-sliders"/></svg><span data-i18n="nav.demo">Demo controls</span></button>
+      <button data-view="settings"><svg><use href="#i-sliders"/></svg><span data-i18n="nav.settings">Settings</span></button>
     </nav>
     <div id="account" class="account"></div>
     <div id="health" class="health"></div>
@@ -68,7 +70,7 @@
       <button class="icon-btn only-mobile" id="back-btn" hidden aria-label="Back"><svg><use href="#i-back"/></svg></button>
       <h1 id="page-title">My medicines</h1>
       <span id="live" class="live-pill" title="Live updates from the database">Connecting…</span>
-      <select id="lang" class="lang" aria-label="Language for Gemini answers" title="Language for Gemini answers">
+      <select id="lang" class="lang" aria-label="Language" title="Language">
         <option value="en">English</option><option value="ar">العربية</option><option value="es">Español</option><option value="bn">বাংলা</option>
       </select>
       <button class="icon-btn" id="help-btn" aria-label="How to read LIFELOG"><svg><use href="#i-help"/></svg></button>
@@ -78,9 +80,10 @@
       <!-- ======================================================= medicines -->
       <section id="view-meds" class="view active">
         <div class="row between summary-row"><div id="meds-summary" class="summary"></div>
-          <button id="share-btn" class="btn">Share with a caregiver</button></div>
+          <button id="share-btn" class="btn" data-i18n="btn.share">Share with a caregiver</button></div>
         <div class="meds-layout">
           <div id="item-list" class="med-grid"></div>
+          <div id="reminders" class="reminders"></div>
           <div id="item-detail" class="detail"></div>
         </div>
       </section>
@@ -91,9 +94,9 @@
           <div class="row between">
             <p class="muted">Checked every minute by a job inside Tiger Data, and within seconds of new readings.</p>
             <div class="row">
-              <button id="notify-btn" class="btn">Turn on notifications</button>
+              <button id="notify-btn" class="btn" data-i18n="btn.notify">Turn on notifications</button>
               <label class="toggle"><input type="checkbox" id="alerts-all"> Whole neighborhood</label>
-              <button id="alerts-check" class="btn">Check now</button>
+              <button id="alerts-check" class="btn" data-i18n="btn.check">Check now</button>
             </div>
           </div>
           <div id="alerts-list"></div>
@@ -124,6 +127,7 @@
         <div class="two-col">
           <div id="rescue-map" class="map"></div>
           <div class="card">
+            <div id="power-box" class="power-box"></div>
             <div id="rescue-live"></div>
             <div class="row between"><h2>Who needs help first</h2><button id="plan-btn" class="btn ai"><svg><use href="#i-spark"/></svg>Dispatch plan</button></div>
             <div id="rescue-list"></div>
@@ -199,6 +203,64 @@
         </div>
       </section>
 
+      <!-- ======================================================= people I care for -->
+      <section id="view-family" class="view">
+        <div class="card narrow">
+          <h2 data-i18n="family.title">People I care for</h2>
+          <p class="muted small" data-i18n="family.none">No one yet.</p>
+          <form id="family-form" class="dates-form">
+            <label class="small"><span data-i18n="family.paste">Paste the share link they sent you</span><input type="text" id="family-link" placeholder="https://…/s/…" required></label>
+            <label class="small"><span data-i18n="family.name">Who is it?</span><input type="text" id="family-label"></label>
+            <button class="btn primary" type="submit" data-i18n="family.add">Add a person</button>
+          </form>
+        </div>
+        <div id="family-list" style="margin-top:14px"></div>
+      </section>
+
+      <!-- ======================================================= settings -->
+      <section id="view-settings" class="view">
+        <div class="card narrow">
+          <h2 data-i18n="settings.alerts">Text and phone-call alerts</h2>
+          <p class="muted small">Critical alerts (frozen, too hot, budget used up, power outage, expired) and refill reminders 7, 3 and 1 days before a use-by date, by text or phone call: for people who don't watch an app.</p>
+          <div id="twilio-note"></div>
+          <form id="contact-form" class="dates-form">
+            <label class="small"><span data-i18n="settings.name">Name</span><input type="text" id="c-name" placeholder="Me, or Mom"></label>
+            <label class="small"><span data-i18n="settings.phone">Phone number</span><input type="text" id="c-phone" placeholder="(313) 555-0123" required></label>
+            <label class="small toggle"><input type="checkbox" id="c-sms" checked> <span data-i18n="settings.sms">Text messages</span></label>
+            <label class="small toggle"><input type="checkbox" id="c-voice"> <span data-i18n="settings.voice">Phone calls</span></label>
+            <label class="small toggle"><input type="checkbox" id="c-rem" checked> <span data-i18n="settings.reminders">Refill reminders</span></label>
+            <button class="btn primary" type="submit" data-i18n="settings.add_contact">Add contact</button>
+          </form>
+          <div id="contact-list"></div>
+          <details class="fold"><summary>Messages sent <span class="muted">most recent first</span></summary><div id="message-list" class="small"></div></details>
+        </div>
+        <div class="card narrow" style="margin-top:14px">
+          <h2 data-i18n="settings.language">Language</h2>
+          <select id="lang2" aria-label="Language"><option value="en">English</option><option value="ar">العربية</option><option value="es">Español</option><option value="bn">বাংলা</option></select>
+          <p class="muted small" id="lang-note"></p>
+        </div>
+        <div class="card narrow" style="margin-top:14px">
+          <h2 data-i18n="settings.password">Change password</h2>
+          <form id="pw-form" class="dates-form">
+            <label class="small"><span data-i18n="settings.current">Current password</span><input type="password" id="pw-cur" autocomplete="current-password"></label>
+            <label class="small"><span data-i18n="settings.new">New password</span><input type="password" id="pw-new" minlength="8" autocomplete="new-password" required></label>
+            <button class="btn primary" type="submit" data-i18n="settings.save">Save</button>
+          </form>
+        </div>
+        <div class="card narrow" style="margin-top:14px">
+          <h2 data-i18n="settings.data">Your data</h2>
+          <p class="muted small">A ZIP with everything LIFELOG holds about you: medicines, every temperature reading, doses, alerts, receipts, contacts and messages.</p>
+          <a class="btn" href="/api/account/export" data-i18n="settings.download">Download my data</a>
+          <h3 data-i18n="settings.delete">Delete my account</h3>
+          <p class="muted small">Deletes your account, your medicines and every reading, permanently. Demo accounts can't be deleted.</p>
+          <form id="del-form" class="dates-form">
+            <label class="small"><span data-i18n="settings.delete_confirm">Type DELETE to confirm</span><input type="text" id="del-confirm" required></label>
+            <label class="small"><span data-i18n="login.password">Password</span><input type="password" id="del-pw" autocomplete="current-password"></label>
+            <button class="btn danger" type="submit" data-i18n="settings.delete">Delete my account</button>
+          </form>
+        </div>
+      </section>
+
       <!-- ======================================================= pharmacist review -->
       <section id="view-review" class="view">
         <div class="card narrow">
@@ -257,25 +319,27 @@
   </div>
 
   <nav class="tabbar" aria-label="Main navigation">
-    <button data-view="meds" class="active"><svg><use href="#i-pill"/></svg><span>Medicines</span></button>
-    <button data-view="alerts"><svg><use href="#i-bell"/></svg><span>Alerts</span><b id="alert-count-m" class="badge" hidden></b></button>
-    <button data-view="ask"><svg><use href="#i-chat"/></svg><span>Ask</span></button>
-    <button data-view="rescue"><svg><use href="#i-bolt"/></svg><span>Outage</span></button>
-    <button id="more-btn"><svg><use href="#i-more"/></svg><span>More</span></button>
+    <button data-view="meds" class="active"><svg><use href="#i-pill"/></svg><span data-i18n="tab.meds">Medicines</span></button>
+    <button data-view="alerts"><svg><use href="#i-bell"/></svg><span data-i18n="nav.alerts">Alerts</span><b id="alert-count-m" class="badge" hidden></b></button>
+    <button data-view="ask"><svg><use href="#i-chat"/></svg><span data-i18n="tab.ask">Ask</span></button>
+    <button data-view="rescue"><svg><use href="#i-bolt"/></svg><span data-i18n="tab.rescue">Outage</span></button>
+    <button id="more-btn"><svg><use href="#i-more"/></svg><span data-i18n="tab.more">More</span></button>
   </nav>
 </div>
 
 <div id="sheet" class="sheet" hidden>
   <div class="sheet-panel" role="dialog" aria-label="More">
     <div class="sheet-grid">
-      <button data-view="add"><svg><use href="#i-plus"/></svg>Add medicine</button>
-      <button data-view="voice"><svg><use href="#i-mic"/></svg>Voice report</button>
-      <button data-view="trip"><svg><use href="#i-plane"/></svg>Trip check</button>
-      <button data-view="porch"><svg><use href="#i-sun"/></svg>Porch heat</button>
-      <button data-view="tiger"><svg><use href="#i-db"/></svg>Under the hood</button>
-      <button data-view="dev"><svg><use href="#i-file"/></svg>For developers</button>
-      <button data-view="demo" class="owner-only"><svg><use href="#i-sliders"/></svg>Demo controls</button>
-      <button data-view="review" class="pharm-only"><svg><use href="#i-check"/></svg>Pharmacist review</button>
+      <button data-view="add"><svg><use href="#i-plus"/></svg><span data-i18n="nav.add">Add medicine</span></button>
+      <button data-view="voice"><svg><use href="#i-mic"/></svg><span data-i18n="nav.voice">Voice report</span></button>
+      <button data-view="trip"><svg><use href="#i-plane"/></svg><span data-i18n="nav.trip">Trip check</span></button>
+      <button data-view="porch"><svg><use href="#i-sun"/></svg><span data-i18n="nav.porch">Porch heat</span></button>
+      <button data-view="tiger"><svg><use href="#i-db"/></svg><span data-i18n="nav.tiger">Under the hood</span></button>
+      <button data-view="dev"><svg><use href="#i-file"/></svg><span data-i18n="nav.dev">For developers</span></button>
+      <button data-view="demo" class="owner-only"><svg><use href="#i-sliders"/></svg><span data-i18n="nav.demo">Demo controls</span></button>
+      <button data-view="review" class="pharm-only"><svg><use href="#i-check"/></svg><span data-i18n="nav.review">Pharmacist review</span></button>
+      <button data-view="family"><svg><use href="#i-pill"/></svg><span data-i18n="nav.family">People I care for</span></button>
+      <button data-view="settings"><svg><use href="#i-sliders"/></svg><span data-i18n="nav.settings">Settings</span></button>
       <button id="signout-m"><svg><use href="#i-back"/></svg>Sign out</button>
     </div>
     <p id="account-m" class="muted small" style="text-align:center"></p>
@@ -317,6 +381,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="/static/app.js?v=17"></script>
+<script src="/static/app.js?v=19"></script>
 </body>
 </html>

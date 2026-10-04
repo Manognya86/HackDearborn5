@@ -59,3 +59,17 @@ BEGIN
         EXECUTE format('CREATE POLICY via_item ON %I USING (EXISTS (SELECT 1 FROM items i WHERE i.id = %I.item_id))', t, t);
     END LOOP;
 END $$;
+
+-- contacts, messages sent, caregiver links and power reports belong to one account
+DO $$
+DECLARE t TEXT;
+BEGIN
+    FOREACH t IN ARRAY ARRAY['alert_contacts', 'notifications', 'power_reports'] LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('DROP POLICY IF EXISTS own_rows ON %I', t);
+        EXECUTE format('CREATE POLICY own_rows ON %I USING (user_id = lifelog_uid()) WITH CHECK (user_id = lifelog_uid())', t);
+    END LOOP;
+END $$;
+ALTER TABLE care_links ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS own_links ON care_links;
+CREATE POLICY own_links ON care_links USING (caregiver_id = lifelog_uid()) WITH CHECK (caregiver_id = lifelog_uid());

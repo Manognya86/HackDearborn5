@@ -218,7 +218,7 @@ LANGUAGE sql STABLE AS $$
                || CASE WHEN o.etr_known THEN 'Estimated restoration '
                        || to_char(o.est_restore_at AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '.'
                        ELSE 'No restoration time yet.' END
-           ELSE l.nickname || ' is inside ' || o.name || '. Power expected back around '
+           ELSE l.nickname || ' is inside ' || split_part(o.name, ' [user ', 1) || '. Power expected back around '
                 || to_char(o.est_restore_at AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '.' END
     FROM last l JOIN LATERAL (SELECT * FROM outages o WHERE o.active AND ST_Contains(o.area, l.geom)
                               ORDER BY o.source LIKE '%-live', o.id LIMIT 1) o ON TRUE
@@ -240,6 +240,22 @@ LANGUAGE sql STABLE AS $$
     FROM last WHERE opened_at IS NOT NULL AND coalesce((model->>'in_use_days')::numeric, 0) > 0
       AND opened_at + make_interval(days => round((model->>'in_use_days')::numeric)::int)
           BETWEEN now() AND now() + INTERVAL '3 days'
+    UNION ALL
+    -- refill reminder: the printed expiration date is within a week
+    SELECT id, 'expires_soon', 'warning',
+           nickname || ' expires on ' || to_char(expires_on, 'FMMon FMDD') || ' (' || (expires_on - current_date)
+           || CASE WHEN expires_on - current_date = 1 THEN ' day' ELSE ' days' END || '). Time to ask for a refill.'
+    FROM last WHERE expires_on IS NOT NULL AND expires_on >= current_date AND expires_on <= current_date + 7
+    UNION ALL
+    -- the utility reports outages in this ZIP and this fridge medicine is warming steadily: the power may be out here
+    SELECT l.id, 'possible_outage', 'warning',
+           l.nickname || ' is warming ' || round(l.slope::numeric, 1) || '°C per hour and ' || upper(split_part(o.source, '-', 1))
+           || ' reports outages in your ZIP code. Is your power out? Tap "My power is out" so LIFELOG can plan for it.'
+    FROM last l JOIN LATERAL (SELECT * FROM outages o WHERE o.active AND o.source LIKE '%-live'
+                              AND ST_Contains(o.area, l.geom) LIMIT 1) o ON TRUE
+    WHERE (l.model->>'target_max_c')::float8 <= 10 AND l.trend_n >= 4 AND l.slope >= 1 AND coalesce(l.r2, 0) >= 0.6
+      AND l.bucket >= now() - INTERVAL '15 minutes'
+      AND NOT EXISTS (SELECT 1 FROM outages r WHERE r.active AND r.source = 'report' AND ST_Contains(r.area, l.geom))
     UNION ALL
     -- early warning: still inside its range, but a steady warming trend reaches the label's max within an hour
     SELECT id, 'warming_trend', 'warning',

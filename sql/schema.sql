@@ -168,6 +168,68 @@ ALTER TABLE outages ADD COLUMN IF NOT EXISTS etr_known     BOOLEAN NOT NULL DEFA
 ALTER TABLE outages ADD COLUMN IF NOT EXISTS updated_at    TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS outages_external ON outages (external_id) WHERE external_id IS NOT NULL;
 
+-- Text-message and phone-call alerts: the people to reach (the patient, a caregiver) and every message sent
+CREATE TABLE IF NOT EXISTS alert_contacts (
+    id         SERIAL PRIMARY KEY,
+    user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    phone      TEXT NOT NULL,                      -- E.164, e.g. +13135550123
+    sms        BOOLEAN NOT NULL DEFAULT TRUE,
+    voice      BOOLEAN NOT NULL DEFAULT FALSE,     -- phone call that reads the alert aloud
+    reminders  BOOLEAN NOT NULL DEFAULT TRUE,      -- refill / use-by reminders too
+    active     BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS notifications (
+    id          SERIAL PRIMARY KEY,
+    user_id     INT REFERENCES users(id) ON DELETE CASCADE,
+    contact_id  INT REFERENCES alert_contacts(id) ON DELETE SET NULL,
+    item_id     INT REFERENCES items(id) ON DELETE CASCADE,
+    alert_id    INT,
+    kind        TEXT NOT NULL,                     -- alert | reminder-7 | reminder-3 | reminder-1 | test
+    channel     TEXT NOT NULL,                     -- sms | voice
+    to_phone    TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    status      TEXT NOT NULL,                     -- sent | dry_run | failed
+    provider_id TEXT,
+    error       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS notifications_dedupe ON notifications (contact_id, kind, item_id, alert_id);
+
+-- A caregiver keeps the share links of the people they look after, to see them all in one place
+CREATE TABLE IF NOT EXISTS care_links (
+    id           SERIAL PRIMARY KEY,
+    caregiver_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    share_token  TEXT NOT NULL,
+    label        TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (caregiver_id, share_token)
+);
+
+-- "My power is out" / "Power is back": confirms what the utility only reports per ZIP code
+CREATE TABLE IF NOT EXISTS power_reports (
+    id         SERIAL PRIMARY KEY,
+    user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    power_out  BOOLEAN NOT NULL,
+    outage_id  INT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Every pharmacist decision: who approved or rejected what, and when
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         SERIAL PRIMARY KEY,
+    actor_id   INT REFERENCES users(id) ON DELETE SET NULL,
+    actor      TEXT NOT NULL,
+    action     TEXT NOT NULL,                      -- review_approved | review_changes_requested | evidence_approved | evidence_rejected
+    product_id INT REFERENCES products(id) ON DELETE CASCADE,
+    detail     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS audit_log_product ON audit_log (product_id, created_at DESC);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS lang TEXT NOT NULL DEFAULT 'en';
+
 -- ---------------------------------------------------------------- telemetry
 CREATE TABLE IF NOT EXISTS readings (
     ts          TIMESTAMPTZ NOT NULL,

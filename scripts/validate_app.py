@@ -410,6 +410,66 @@ def alert_ack():
     return f"acknowledged '{a[0]['kind']}'"
 
 
+def reminders_():
+    r = ok(cx.get("/api/reminders", params={"days": 30}))
+    letter_ = ok(cx.post(f"/api/items/{IID}/letter", params={"ai": "false"}))
+    must(not letter_["ai"] and len(letter_["letter"]) > 200 and letter_["receipt"]["code"], "no instant letter draft")
+    return f"{len(r)} coming up" + (f" (first: {r[0]['nickname'][:24]}, {r[0]['days_left']} days)" if r else "") + "; instant refill draft"
+
+
+def text_alerts():
+    c = ok(cx.post("/api/contacts", json={"name": "Validation", "phone": "(313) 555-0142", "sms": True, "voice": True}))
+    must(c["phone"] == "+13135550142", f"phone not normalized: {c['phone']}")
+    must(cx.post("/api/contacts", json={"name": "x", "phone": "12"}).status_code == 422, "bad phone accepted")
+    sent = ok(cx.post(f"/api/contacts/{c['id']}/test"))
+    must({x["channel"] for x in sent} == {"sms", "voice"}, f"test sent {sent}")
+    lst = ok(cx.get("/api/contacts"))
+    must(any(m["kind"] == "test" for m in lst["messages"]), "test message not logged")
+    ok(cx.delete(f"/api/contacts/{c['id']}"))
+    return f"text + call test {'sent' if lst['twilio'] else 'recorded as dry run (no Twilio configured)'}; contact removed"
+
+
+def caregivers():
+    cu = signed_in("customer")
+    people = ok(cu.get("/api/caring"))
+    must(people and people[0]["active"] and people[0]["view"]["items"], "customer's caregiver view is empty")
+    must(cu.post("/api/caring", json={"link": "https://x/s/not-a-token"}).status_code == 422, "bad link accepted")
+    return f"customer looks after {people[0]['view']['name']} ({len(people[0]['view']['items'])} medicines)"
+
+
+def power_report():
+    on = ok(cx.post("/api/power", json={"out": True}))
+    must(on["reported_out"], "report not recorded")
+    r = ok(cx.get("/api/rescue"))
+    must(any(p["user_id"] for p in r["people"]), "nobody in the reported outage")
+    off = ok(cx.post("/api/power", json={"out": False}))
+    must(not off["reported_out"], "power back not recorded")
+    return f"reported out -> {len(r['people'])} medicines in the rescue list -> back"
+
+
+def account_controls():
+    import secrets as _s
+    c = httpx.Client(base_url=args.base, timeout=60)
+    email, pw = f"validation-{_s.token_hex(4)}@example.com", "first-password-1"
+    ok(c.post("/api/auth/signup", json={"name": "Validation", "email": email, "password": pw}))
+    must(c.post("/api/account/password", json={"current": "wrong", "new": "second-password-2"}).status_code == 403, "wrong current password accepted")
+    ok(c.post("/api/account/password", json={"current": pw, "new": "second-password-2"}))
+    ok(c.post("/api/account/lang", json={"lang": "ar"}))
+    must(ok(c.get("/api/me"))["lang"] == "ar", "language not saved")
+    z = c.get("/api/account/export")
+    must(z.status_code == 200 and z.content[:2] == b"PK", "export is not a ZIP")
+    must(c.request("DELETE", "/api/account", json={"confirm": "nope"}).status_code == 422, "delete without confirmation")
+    ok(c.request("DELETE", "/api/account", json={"confirm": "DELETE", "password": "second-password-2"}))
+    must(httpx.post(f"{args.base}/api/auth/login", json={"email": email, "password": "second-password-2"}).status_code == 401, "deleted account can still sign in")
+    must(cx.request("DELETE", "/api/account", json={"confirm": "DELETE"}).status_code == 403, "demo account could be deleted")
+    return "sign up, change password, language, export ZIP, delete; demo account protected"
+
+
+check("reminders + instant refill letter", reminders_)
+check("text and phone-call alerts (contacts, test, log)", text_alerts)
+check("caregiver view: people I care for", caregivers)
+check("my power is out / power is back", power_report)
+check("account: password, language, export, delete", account_controls)
 check("sign-in with password (owner, customer, pharmacist)", accounts)
 check("privacy: customer vs owner (row-level security)", privacy)
 check("doses: log, list, delete", doses)

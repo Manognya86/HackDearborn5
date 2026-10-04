@@ -7,7 +7,7 @@
 <title>Sign in · LIFELOG</title>
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="/static/style.css?v=13">
+<link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body class="auth-page">
 <main class="auth">
@@ -16,25 +16,25 @@
 
   <div class="card">
     <div class="seg" role="tablist">
-      <button type="button" class="active" data-mode="login" role="tab">Sign in</button>
-      <button type="button" data-mode="signup" role="tab">Create account</button>
+      <button type="button" class="active" data-mode="login" role="tab" data-i18n="login.signin">Sign in</button>
+      <button type="button" data-mode="signup" role="tab" data-i18n="login.create">Create account</button>
     </div>
     <form id="auth-form">
-      <label class="field" id="name-field" hidden>Your name<input type="text" id="name" autocomplete="name"></label>
-      <label class="field">Email<input type="email" id="email" autocomplete="email" required></label>
-      <label class="field">Password<input type="password" id="password" autocomplete="current-password" minlength="8" required></label>
+      <label class="field" id="name-field" hidden><span data-i18n="login.name">Your name</span><input type="text" id="name" autocomplete="name"></label>
+      <label class="field"><span data-i18n="login.email">Email</span><input type="email" id="email" autocomplete="email" required></label>
+      <label class="field"><span data-i18n="login.password">Password</span><input type="password" id="password" autocomplete="current-password" minlength="8" required></label>
       <button class="btn primary big" type="submit" id="submit">Sign in</button>
       <p id="err" class="err" role="alert"></p>
     </form>
   </div>
 
   <div class="card" id="demo-card" hidden>
-    <h2>Try the demo</h2>
+    <h2 data-i18n="login.demo">Try the demo</h2>
     <p class="muted small">Sample data from Dearborn, Michigan. No password needed. Each account only sees its own medicines.</p>
     <div class="demo-accounts">
-      <button class="btn primary" data-demo="owner"><b>Owner</b><span>Manu · 6 medicines, full demo controls</span></button>
-      <button class="btn" data-demo="customer"><b>Customer</b><span>Alex · 3 medicines of their own</span></button>
-      <button class="btn" data-demo="pharmacist"><b>Pharmacist</b><span>Reviews rules, wording and evidence</span></button>
+      <button class="btn primary" data-demo="owner"><b data-i18n="login.owner">Owner</b><span>Manu · 6 medicines, full demo controls</span></button>
+      <button class="btn" data-demo="customer"><b data-i18n="login.customer">Customer</b><span>Alex · 3 medicines of their own</span></button>
+      <button class="btn" data-demo="pharmacist"><b data-i18n="login.pharmacist">Pharmacist</b><span>Reviews rules, wording and evidence</span></button>
     </div>
   </div>
 
@@ -47,7 +47,7 @@ document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => {
   mode = b.dataset.mode;
   document.querySelectorAll("[data-mode]").forEach((x) => x.classList.toggle("active", x === b));
   $("#name-field").hidden = mode !== "signup";
-  $("#submit").textContent = mode === "signup" ? "Create account" : "Sign in";
+  $("#submit").textContent = document.querySelector(`[data-mode="${mode}"]`).textContent;
   $("#password").autocomplete = mode === "signup" ? "new-password" : "current-password";
   $("#err").textContent = "";
 });
@@ -67,6 +67,14 @@ $("#auth-form").onsubmit = (e) => {
 };
 document.querySelectorAll("[data-demo]").forEach((b) => b.onclick = () =>
   go("/api/auth/demo?role=" + b.dataset.demo).catch((err) => { $("#err").textContent = err.message; }));
+// interface language: the one chosen last time on this device
+let lang = "en";
+try { lang = localStorage.getItem("lifelog.lang") || "en"; } catch { /* storage blocked */ }
+fetch("/static/i18n.json?v=1").then((r) => r.json()).then((d) => {
+  const T = d[lang] || d.en;
+  document.documentElement.lang = lang; document.documentElement.dir = lang === "ar" ? "rtl" : "ltr";
+  document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = T[el.dataset.i18n] || d.en[el.dataset.i18n]; });
+}).catch(() => {});
 fetch("/api/auth/options").then((r) => r.json()).then((o) => { $("#demo-card").hidden = !o.demo; }).catch(() => {});
 </script>
 </body>
