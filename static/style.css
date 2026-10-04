@@ -352,3 +352,5 @@ body.owner .owner-only { display: flex !important; }
 html[dir="rtl"] .med, html[dir="rtl"] .hero, html[dir="rtl"] .row { direction: rtl; }
 .toggle input[type=checkbox] { width: 18px; height: 18px; min-height: 0; margin: 0; flex: none; }
 .dates-form .toggle { align-self: end; padding-bottom: 12px; }
+.warn-note { color: var(--warn); display: flex; gap: 6px; align-items: flex-start; }
+.warn-note svg { width: 16px; height: 16px; flex: none; margin-top: 2px; }

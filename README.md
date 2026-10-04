@@ -202,8 +202,10 @@ stored only as hashes and never committed). An existing account's password is ne
 - **Text and phone-call alerts.** Settings → add a phone number for yourself or a caregiver. Critical alerts (frozen,
   above the label's limit, budget used up, power outage, expired, in-use period over, predicted excursion) are sent once
   per alert by text, and by a phone call that reads the alert aloud if you ask for calls. Sent through Twilio's REST API
-  when `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM` are set; without them every message is recorded as
-  a **dry run** you can read in Settings → Messages sent.
+  when `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` (or `TWILIO_API_KEY_SID` + `TWILIO_API_KEY_SECRET`; a rejected key
+  falls back to the token) and `TWILIO_FROM` are set; without them every message is recorded as a **dry run** you can
+  read in Settings → Messages sent. `TWILIO_FROM` must be a phone number owned by the Twilio account, and a trial
+  account can only reach numbers verified in the Twilio Console (Phone Numbers → Verified Caller IDs).
 - **Refill and use-by reminders.** "Coming up" under My medicines lists every medicine whose use-by date (printed
   expiry or in-use limit, whichever is first) is within 30 days, with a one-click refill letter draft (no AI needed,
   with its exposure receipt). Texts go out 7, 3 and 1 days before, once each; the alert job adds "expires soon" a week
@@ -299,7 +301,7 @@ python -m venv .venv
 cp .env.example .env        # fill GEMINI_API_KEY and DATABASE_URL
 .venv/Scripts/python scripts/check_setup.py
 .venv/Scripts/python scripts/setup_db.py
-.venv/Scripts/uvicorn lifelog.app:app --port 8000
+.venv/Scripts/uvicorn lifelog.app:app --host 0.0.0.0 --port 8000
 ```
 Open http://localhost:8000 and press **Try the demo → Owner** (or create an account).
 Upgrading an existing database without losing data: `.venv/Scripts/python scripts/migrate.py`.
@@ -337,6 +339,13 @@ then run `setup_db.py --scale 50` right before judging and don't press Reset dur
 ### Phones and other devices
 Responsive layout: sidebar on desktop, bottom tab bar on phones, safe-area insets for notched phones, light and dark
 themes, installable to the home screen (web app manifest), print stylesheet for a pharmacist summary.
+
+**QR codes and shared links open on phones.** Receipt QR codes, refill-letter links and caregiver links use
+`PUBLIC_URL` when it's set (a deployed address or a tunnel), otherwise this computer's Wi-Fi address instead of
+`localhost` (which on a phone means the phone itself). For that, start the server with `--host 0.0.0.0`, allow Python
+through Windows Firewall on private networks, and keep the phone on the same Wi-Fi. The app warns under the QR code
+when phones can't reach it. Some campus and guest networks block device-to-device traffic: then use a phone hotspot or
+a tunnel and set `PUBLIC_URL`.
 
 ### Checked against Tiger Data's docs
 - **Columnstore (hypercore)** is the current compression API: `enable_columnstore` + `segmentby`/`orderby`,

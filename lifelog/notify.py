@@ -30,13 +30,31 @@ def normalize_phone(raw: str) -> str:
     return num
 
 
-def _auth() -> tuple[str, str] | None:
-    """API key + secret when set (Twilio's recommendation), otherwise the account SID + auth token."""
+def _auths() -> list[tuple[str, str]]:
+    """Credentials to try, in order: an API key + secret (Twilio's recommendation), then the account SID + auth
+    token. A rejected key falls back to the token, so one wrong secret doesn't silence the alerts."""
+    out = []
     if config.TWILIO_API_KEY_SID and config.TWILIO_API_KEY_SECRET:
-        return config.TWILIO_API_KEY_SID, config.TWILIO_API_KEY_SECRET
+        out.append((config.TWILIO_API_KEY_SID, config.TWILIO_API_KEY_SECRET))
     if config.TWILIO_ACCOUNT_SID and config.TWILIO_AUTH_TOKEN:
-        return config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN
-    return None
+        out.append((config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN))
+    return out
+
+
+def _auth() -> tuple[str, str] | None:
+    a = _auths()
+    return a[0] if a else None
+
+
+def twilio_request(method: str, path: str, **kw) -> httpx.Response:
+    """Call the Twilio REST API for this account, trying each credential until one is accepted."""
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{config.TWILIO_ACCOUNT_SID}/{path}"
+    r = None
+    for a in _auths():
+        r = httpx.request(method, url, auth=a, timeout=15, **kw)
+        if r.status_code != 401:
+            return r
+    return r
 
 
 def configured() -> bool:
@@ -54,8 +72,7 @@ def _send(channel: str, to: str, body: str) -> tuple[str, str | None, str | None
         said = escape(body.replace("LIFELOG:", "This is LIFELOG."))
         data["Twiml"] = f'<Response><Say voice="alice">{said}</Say><Pause length="1"/><Say voice="alice">{said}</Say></Response>'
     try:
-        r = httpx.post(API.format(sid=config.TWILIO_ACCOUNT_SID, kind=kind), data=data,
-                       auth=_auth(), timeout=15)
+        r = twilio_request("POST", f"{kind}.json", data=data)
         if r.status_code >= 300:
             return "failed", None, f"HTTP {r.status_code}: {r.json().get('message', r.text[:120])}"
         return "sent", r.json().get("sid"), None

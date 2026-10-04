@@ -155,6 +155,14 @@ async function loadItems() {
 }
 loaders.meds = () => loadItems().then(() => { loadReminders(); return currentItem && !isMobile() && openItem(currentItem, { quiet: true }); });
 
+// links in QR codes must open on a phone: localhost only works on this computer (see /api/public-url)
+let _pub = null;
+async function publicBase() {
+  if (!_pub) _pub = await api("/api/public-url").catch(() => ({ base: location.origin, phone_ready: false }));
+  return _pub;
+}
+const phoneNote = (p) => p.phone_ready ? "" : `<p class="small warn-note">${icon("alert")} ${esc(p.hint || "Phones can't open this link yet.")}</p>`;
+
 async function loadReminders() {
   const el = $("#reminders"); if (!el) return;
   let list = [];
@@ -167,7 +175,7 @@ async function loadReminders() {
     : `<p class="muted small">${esc(t("rem.none"))}</p>`}<div id="draft-box"></div></div>`;
   $$("[data-draft]").forEach((b) => b.onclick = (e) => busy(e.currentTarget, async () => {
     const r = await post(`/api/items/${b.dataset.draft}/letter?ai=false`);
-    const url = location.origin + "/r/" + r.receipt.code;
+    const url = (await publicBase()).base + "/r/" + r.receipt.code;
     const text = r.letter.replace("/r/" + r.receipt.code, url);
     $("#draft-box").innerHTML = `<div class="ai-box"><div class="tag offline">${icon("file")}Refill letter draft · receipt ${esc(r.receipt.code)}</div><pre class="log">${esc(text)}</pre>
       <div class="row"><button class="btn" id="draft-copy">Copy</button><a class="btn" href="/r/${esc(r.receipt.code)}" target="_blank">Open receipt</a></div></div>`;
@@ -348,16 +356,19 @@ async function openItem(id, { quiet = false } = {}) {
   };
   $("#letter-btn").onclick = (e) => busy(e.currentTarget, async () => {
     const r = await post(withLang(`/api/items/${id}/letter`));
-    $("#ai-box").innerHTML = `<div class="ai-box">${aiTag(r, "Refill / replacement letter (Gemini)")}<pre class="log">${esc(r.letter.replace("/r/" + (r.receipt?.code || "x"), location.origin + "/r/" + (r.receipt?.code || "x")))}</pre>
+    const base = (await publicBase()).base;
+    r.letter = r.letter.replace("/r/" + (r.receipt?.code || "x"), base + "/r/" + (r.receipt?.code || "x"));
+    $("#ai-box").innerHTML = `<div class="ai-box">${aiTag(r, "Refill / replacement letter (Gemini)")}<pre class="log">${esc(r.letter)}</pre>
       <div class="row"><button class="btn" id="copy-letter">Copy</button>${r.receipt ? `<a class="btn" href="/r/${esc(r.receipt.code)}" target="_blank">Open receipt ${esc(r.receipt.code)}</a>` : ""}</div></div>`;
     $("#copy-letter").onclick = () => navigator.clipboard.writeText(r.letter).then(() => toast("Copied"));
   });
   $("#receipt-btn").onclick = (e) => busy(e.currentTarget, async () => {
     const rc = await post(`/api/items/${id}/receipt`);
-    const url = `${location.origin}/r/${rc.code}`;
+    const pub = await publicBase();
+    const url = `${pub.base}/r/${rc.code}`;
     $("#ai-box").innerHTML = `<div class="ai-box"><div class="tag">${icon("check")}Exposure receipt ${esc(rc.code)}</div>
       <p class="small">A frozen, fingerprinted copy of this medicine's exposure record up to ${fmt(rc.as_of)}. A pharmacist or insurer can scan it to see the record and whether the data still matches.</p>
-      <div id="rc-qr" class="qr"></div><div class="link-box">${esc(url)}</div>
+      <div id="rc-qr" class="qr"></div><div class="link-box">${esc(url)}</div>${phoneNote(pub)}
       <div class="row"><button class="btn primary" id="rc-copy">Copy link</button><a class="btn" href="/r/${esc(rc.code)}" target="_blank">Open</a></div></div>`;
     if (window.QRCode) new QRCode($("#rc-qr"), { text: url, width: 150, height: 150 });
     $("#rc-copy").onclick = () => navigator.clipboard.writeText(url).then(() => toast("Copied"));
@@ -772,8 +783,9 @@ $("#share-form").addEventListener("submit", (e) => {
   e.preventDefault();
   busy(e.submitter, async () => {
     const { token } = await post("/api/share", { label: $("#share-label").value || null });
-    const url = `${location.origin}/s/${token}`;
-    $("#share-out").innerHTML = `<div id="qr"></div><div class="link-box">${esc(url)}</div>
+    const pub = await publicBase();
+    const url = `${pub.base}/s/${token}`;
+    $("#share-out").innerHTML = `<div id="qr"></div><div class="link-box">${esc(url)}</div>${phoneNote(pub)}
       <div class="row"><button class="btn primary" id="copy-share">Copy link</button>${navigator.share ? `<button class="btn" id="native-share">Send…</button>` : ""}</div>`;
     if (window.QRCode) new QRCode($("#qr"), { text: url, width: 160, height: 160 });
     $("#copy-share").onclick = () => navigator.clipboard.writeText(url).then(() => toast("Copied"));

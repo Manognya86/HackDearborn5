@@ -971,6 +971,46 @@ def get_receipt(code: str):
     return r
 
 
+def _lan_ip() -> str | None:
+    """This computer's address on the local network (no packet is sent: UDP connect only picks a route)."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+def _reachable(host: str, port: int) -> bool:
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=1.5):
+            return True
+    except OSError:
+        return False
+
+
+@app.get("/api/public-url")
+def public_url(request: Request):
+    """The address to put in QR codes and shared links. A link to localhost only works on this computer, so links
+    use PUBLIC_URL when it's set, or else this computer's Wi-Fi address (phones on the same network can open it)."""
+    if config.PUBLIC_URL:
+        return {"base": config.PUBLIC_URL.rstrip("/"), "source": "PUBLIC_URL", "phone_ready": True}
+    host = request.url.hostname or ""
+    port = request.url.port or (443 if request.url.scheme == "https" else 80)
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        return {"base": str(request.base_url).rstrip("/"), "source": "this address", "phone_ready": True}
+    ip = _lan_ip()
+    if not ip:
+        return {"base": str(request.base_url).rstrip("/"), "source": "localhost", "phone_ready": False,
+                "hint": "This computer isn't on a network, so phones can't open these links."}
+    ready = _reachable(ip, port)
+    return {"base": f"{request.url.scheme}://{ip}:{port}", "source": "Wi-Fi address", "phone_ready": ready,
+            "hint": None if ready else "Phones can't reach this app yet: start it with --host 0.0.0.0 and allow Python "
+                                       "through Windows Firewall (private networks). The phone must be on the same Wi-Fi."}
+
+
 @app.get("/r/{code}")
 def receipt_page(code: str):
     return FileResponse(config.ROOT / "static" / "receipt.html")
