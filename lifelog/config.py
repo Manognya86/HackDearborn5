@@ -9,6 +9,16 @@ load_dotenv(ROOT / ".env")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # GEMINI_DISABLED=1 turns every Gemini call off (no request leaves the machine): for testing without spending quota
 GEMINI_DISABLED = os.getenv("GEMINI_DISABLED", "").strip().lower() in ("1", "true", "yes")
+# Vertex AI instead of the AI Studio Gemini API: billed to the Cloud project's billing account, so GCP credits
+# pay for it. Set GEMINI_USE_VERTEX=1 plus GOOGLE_CLOUD_PROJECT (signs in with GOOGLE_APPLICATION_CREDENTIALS or
+# `gcloud auth application-default login`), or plus GEMINI_API_KEY holding a Vertex AI API key.
+GEMINI_USE_VERTEX = os.getenv("GEMINI_USE_VERTEX", "").strip().lower() in ("1", "true", "yes")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "global").strip()
+
+
+def gemini_configured() -> bool:
+    return bool(GEMINI_API_KEY or (GEMINI_USE_VERTEX and GOOGLE_CLOUD_PROJECT))
 
 
 # hourly retraining of the per-medicine forecasting models (set DISABLE_BACKGROUND_TRAINING=1 to turn off)
