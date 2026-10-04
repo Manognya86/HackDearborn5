@@ -7,6 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY lifelog ./lifelog
 COPY sql ./sql
+COPY data ./data
 COPY static ./static
 COPY scripts ./scripts
 EXPOSE 8000
