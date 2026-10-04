@@ -1,5 +1,30 @@
-.venv/
+# secrets: every .env variant stays local; only the template is committed
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+.venv/
+venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+htmlcov/
+
+# local output: logs, test runs, exported personal data, scratch files
+*.log
+*.tmp
+validate_out.txt
+lifelog-my-data*.zip
+node_modules/
+
+# editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*.pptx
