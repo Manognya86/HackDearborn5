@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(not config.DATABASE_URL, reason="no DATABASE_URL
 
 @pytest.fixture(autouse=True)
 def _no_twilio(monkeypatch):
-    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM"):
+    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET"):
         monkeypatch.setattr(config, k, "")
 
 

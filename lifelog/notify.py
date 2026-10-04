@@ -30,8 +30,17 @@ def normalize_phone(raw: str) -> str:
     return num
 
 
+def _auth() -> tuple[str, str] | None:
+    """API key + secret when set (Twilio's recommendation), otherwise the account SID + auth token."""
+    if config.TWILIO_API_KEY_SID and config.TWILIO_API_KEY_SECRET:
+        return config.TWILIO_API_KEY_SID, config.TWILIO_API_KEY_SECRET
+    if config.TWILIO_ACCOUNT_SID and config.TWILIO_AUTH_TOKEN:
+        return config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN
+    return None
+
+
 def configured() -> bool:
-    return bool(config.TWILIO_ACCOUNT_SID and config.TWILIO_AUTH_TOKEN and config.TWILIO_FROM)
+    return bool(config.TWILIO_ACCOUNT_SID and _auth() and config.TWILIO_FROM)
 
 
 def _send(channel: str, to: str, body: str) -> tuple[str, str | None, str | None]:
@@ -46,7 +55,7 @@ def _send(channel: str, to: str, body: str) -> tuple[str, str | None, str | None
         data["Twiml"] = f'<Response><Say voice="alice">{said}</Say><Pause length="1"/><Say voice="alice">{said}</Say></Response>'
     try:
         r = httpx.post(API.format(sid=config.TWILIO_ACCOUNT_SID, kind=kind), data=data,
-                       auth=(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN), timeout=15)
+                       auth=_auth(), timeout=15)
         if r.status_code >= 300:
             return "failed", None, f"HTTP {r.status_code}: {r.json().get('message', r.text[:120])}"
         return "sent", r.json().get("sid"), None

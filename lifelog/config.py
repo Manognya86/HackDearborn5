@@ -28,6 +28,9 @@ LIVE_OUTAGES = os.getenv("LIVE_OUTAGES", "1").strip().lower() not in ("0", "fals
 # Text and phone-call alerts (Twilio). Leave empty to record messages as a dry run instead of sending them.
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+# preferred: an API key (SK...) and its secret sign the requests instead of the account's auth token
+TWILIO_API_KEY_SID = os.getenv("TWILIO_API_KEY_SID", "").strip()
+TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "").strip()
 TWILIO_FROM = os.getenv("TWILIO_FROM", "").strip()          # your Twilio phone number, +1...
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").strip()            # link added to texts, e.g. https://lifelog.example.org
 # extra Kubra StormCenter feeds as "name:instance_id:view_id;..." (e.g. Consumers Energy, IDs from its outage map)
