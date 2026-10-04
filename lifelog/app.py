@@ -3,15 +3,67 @@ import json
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import assistant, config, db, engine, forecast_ml, gem, offline, realtime, seed, services, sim
+from . import assistant, auth, config, db, engine, forecast_ml, gem, offline, realtime, seed, services, sim
 from .models import StabilityModel
 
 app = FastAPI(title="LIFELOG Home")
 app.mount("/static", StaticFiles(directory=config.ROOT / "static"), name="static")
+
+# Paths anyone may call without signing in: sign-in itself, health, what a share link / receipt QR / sensor needs.
+_PUBLIC_PREFIXES = ("/api/auth/", "/api/health", "/api/receipts/", "/v1/", "/api/schema/", "/static/")
+_PUBLIC_EXACT = {"/", "/login", "/sw.js", "/manifest.webmanifest", "/docs", "/openapi.json", "/favicon.ico"}
+
+
+def _is_public(path: str, method: str) -> bool:
+    if path in _PUBLIC_EXACT or path.startswith(_PUBLIC_PREFIXES) or path.startswith(("/s/", "/r/")):
+        return True
+    return method == "GET" and path.startswith("/api/share/")   # caregiver view of a share link
+
+
+class AuthMiddleware:
+    """Session cookie -> user. Every signed-in request then runs its queries as the restricted database role with
+    lifelog.user_id set (db.conn), so Postgres row-level security decides what this person can see."""
+
+    def __init__(self, app_):
+        self.app = app_
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        token = Request(scope).cookies.get(auth.COOKIE)
+        user = None
+        if token and config.DATABASE_URL:
+            try:
+                user = await run_in_threadpool(auth.session_user, token)
+            except Exception:  # noqa: BLE001  (database down: public pages still work)
+                user = None
+        if user is None and not _is_public(scope["path"], scope["method"]):
+            return await JSONResponse(status_code=401, content={"detail": "Please sign in."})(scope, receive, send)
+        scope.setdefault("state", {})["user"] = user
+        tok = db.set_user(user["id"] if user else None)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            db.reset_user(tok)
+
+
+app.add_middleware(AuthMiddleware)
+
+
+def _user(request: Request) -> dict:
+    return request.state.user
+
+
+def _pharmacist(request: Request) -> dict:
+    u = request.state.user
+    if not u or u["role"] != "pharmacist":
+        raise HTTPException(403, "Only a pharmacist account can do this.")
+    return u
 
 
 @app.exception_handler(gem.GeminiUnavailable)
@@ -20,8 +72,76 @@ async def _no_gemini(_: Request, exc: gem.GeminiUnavailable):
 
 
 @app.get("/")
-def index():
+def index(request: Request):
+    if not request.state.user:
+        return RedirectResponse("/login", status_code=302)
     return FileResponse(config.ROOT / "static" / "index.html")
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse(config.ROOT / "static" / "login.html")
+
+
+# ------------------------------------------------------------------ accounts
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class SignupIn(LoginIn):
+    name: str = ""
+
+
+def _signed_in(request: Request, user: dict) -> JSONResponse:
+    res = JSONResponse({"ok": True, "user": {"id": user["id"], "name": user["name"]}})
+    res.set_cookie(auth.COOKIE, auth.create_session(user["id"]), max_age=auth.SESSION_DAYS * 86400, httponly=True,
+                   samesite="lax", secure=request.url.scheme == "https", path="/")
+    return res
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginIn, request: Request):
+    u = auth.login(body.email, body.password)
+    if not u:
+        raise HTTPException(401, "That email and password don't match an account.")
+    return _signed_in(request, u)
+
+
+@app.post("/api/auth/signup")
+def auth_signup(body: SignupIn, request: Request):
+    try:
+        u = auth.signup(body.name, body.email, body.password)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return _signed_in(request, u)
+
+
+@app.post("/api/auth/demo")
+def auth_demo(request: Request, role: str = "patient"):
+    u = auth.demo_user(role)
+    if not u:
+        raise HTTPException(404, "Demo sign-in is turned off on this server.")
+    return _signed_in(request, u)
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    auth.end_session(request.cookies.get(auth.COOKIE))
+    res = JSONResponse({"ok": True})
+    res.delete_cookie(auth.COOKIE, path="/")
+    return res
+
+
+@app.get("/api/auth/options")
+def auth_options():
+    return {"demo": config.ENABLE_DEMO_LOGIN}
+
+
+@app.get("/api/me")
+def me_(request: Request):
+    u = _user(request)
+    return {**u, "items": db.one("SELECT count(*) AS n FROM items")["n"]}
 
 
 @app.get("/manifest.webmanifest")
@@ -37,7 +157,8 @@ def _start_realtime():
 
 def _item_or_404(item_id: int, raw: bool = False) -> dict:
     d = services.item_detail(item_id, raw)
-    if not d:
+    # row-level security already hides other people's items; this second check covers databases without it
+    if not d or (db.current_user() and d["item"]["user_id"] != db.current_user()):
         raise HTTPException(404, "item not found")
     return d
 
@@ -65,6 +186,7 @@ def health():
                          WHERE j.job_id >= 1000""")
         out.update(jobs=jobs["jobs"], job_failures=int(jobs["failures"]), jobs_failing_now=jobs["failing"])
         out["watermark"] = services.cagg_watermark()
+        out["row_level_security"] = db.rls_available()
     except Exception as e:  # noqa: BLE001
         out["db_error"] = str(e).splitlines()[0]
     out["ok"] = out["database"] and out.get("jobs_failing_now") == 0 and out["listen_thread_alive"]
@@ -74,8 +196,10 @@ def health():
 # ------------------------------------------------------------------ items
 @app.get("/api/items")
 def items(mine: bool = True):
-    me = db.one("SELECT id FROM users WHERE is_me")
-    return services.list_items(me["id"] if (mine and me) else None)
+    if mine:
+        return services.list_items(db.me())
+    with db.system():   # neighbors' medicines, for the community outage view
+        return services.list_items(None)
 
 
 @app.get("/api/items/{item_id}")
@@ -127,24 +251,25 @@ class ShareIn(BaseModel):
 
 @app.post("/api/share")
 def share(body: ShareIn):
-    me = db.one("SELECT id FROM users WHERE is_me")
-    return {"token": services.create_share(me["id"], body.label)}
+    return {"token": services.create_share(db.me(), body.label)}
 
 
 @app.get("/api/shares")
 def shares():
-    return db.query("SELECT token, label, created_at FROM shares s JOIN users u ON u.id = s.user_id WHERE u.is_me AND NOT revoked ORDER BY created_at DESC")
+    return db.query("SELECT token, label, created_at FROM shares WHERE user_id = %s AND NOT revoked ORDER BY created_at DESC",
+                    (db.me(),))
 
 
 @app.delete("/api/share/{token}")
 def revoke_share(token: str):
-    db.execute("UPDATE shares SET revoked = TRUE WHERE token = %s", (token,))
+    db.execute("UPDATE shares SET revoked = TRUE WHERE token = %s AND user_id = %s", (token, db.me()))
     return {"ok": True}
 
 
 @app.get("/api/share/{token}")
 def shared(token: str):
-    v = services.shared_view(token)
+    with db.system():   # the token itself is the permission
+        v = services.shared_view(token)
     if not v:
         raise HTTPException(404, "This link is no longer active.")
     return v
@@ -192,6 +317,8 @@ def stream():
     import queue as _queue
     import time as _time
 
+    mine = {i["id"] for i in db.query("SELECT id FROM items")}   # row-level security: your items only
+
     def gen():
         q = realtime.subscribe()
         last = 0.0
@@ -202,6 +329,8 @@ def stream():
                     ev = q.get(timeout=15)
                 except _queue.Empty:
                     yield ": keep-alive\n\n"
+                    continue
+                if ev.get("item_id") is not None and ev["item_id"] not in mine:
                     continue
                 if ev.get("type") == "readings":
                     if _time.time() - last < 1.0:
@@ -336,9 +465,8 @@ def create_product(body: NewItem):
     pid = db.one("""INSERT INTO products (name, model, source, source_label, source_url)
                     VALUES (%s, %s, 'gemini', %s, %s) RETURNING id""",
                  (m["product_name"], json.dumps(m), body.source_label, body.source_url))["id"]
-    me = db.one("SELECT id FROM users WHERE is_me")
     iid = db.one("INSERT INTO items (user_id, product_id, nickname, started_at) VALUES (%s,%s,%s, now() - interval '1 hour') RETURNING id",
-                 (me["id"], pid, body.nickname))["id"]
+                 (db.me(), pid, body.nickname))["id"]
     return {"product_id": pid, "item_id": iid}
 
 
@@ -358,6 +486,7 @@ class IngestIn(BaseModel):
 
 @app.post("/api/ingest")
 def ingest(body: IngestIn):
+    _item_or_404(body.item_id)   # readings are only accepted for your own medicines
     return services.ingest(body.item_id, [r.model_dump() for r in body.readings], body.source, body.auto_refresh)
 
 
@@ -393,12 +522,14 @@ async def voice(item_id: int = Form(...), text: str | None = Form(None), audio: 
 # ------------------------------------------------------------------ outage rescue
 @app.get("/api/rescue")
 def rescue():
-    return services.rescue()
+    with db.system():
+        return {**services.rescue(), "live": services.outage_feed_status()}
 
 
 @app.post("/api/rescue/plan")
 def rescue_plan(lang: str = "en"):
-    r = services.rescue()
+    with db.system():
+        r = services.rescue()
     if not r["outages"]["features"]:
         return {"plan": "There's no power outage right now, so there is nothing to dispatch.", "ai": False}
     at_risk = [p for p in r["people"] if p["at_risk"]] or r["people"][:5]
@@ -412,12 +543,14 @@ def rescue_plan(lang: str = "en"):
 # ------------------------------------------------------------------ porch heat index
 @app.get("/api/porch")
 def porch():
-    return services.porch_stats()
+    with db.system():
+        return services.porch_stats()
 
 
 @app.post("/api/porch/brief")
 def porch_brief():
-    stats = services.porch_stats()
+    with db.system():
+        stats = services.porch_stats()
     try:
         return {"brief": gem.porch_brief(stats), "ai": True}
     except gem.GeminiUnavailable as e:
@@ -427,30 +560,39 @@ def porch_brief():
 # ------------------------------------------------------------------ alerts (written by the check_alerts job)
 @app.get("/api/alerts")
 def get_alerts(mine: bool = True, include_resolved: bool = False):
-    return services.alerts(mine_only=mine, include_resolved=include_resolved)
+    if mine:
+        return services.alerts(mine_only=True, include_resolved=include_resolved)
+    with db.system():
+        return services.alerts(mine_only=False, include_resolved=include_resolved)
 
 
 @app.post("/api/alerts/check")
 def run_alert_check():
     services.check_alerts()
-    return services.alerts(mine_only=False)
+    return services.alerts(mine_only=True)
 
 
 @app.post("/api/alerts/{alert_id}/ack")
 def ack_alert(alert_id: int):
-    db.execute("UPDATE alerts SET acked = TRUE WHERE id = %s", (alert_id,))
+    db.execute("UPDATE alerts SET acked = TRUE WHERE id = %s AND item_id IN (SELECT id FROM items WHERE user_id = %s)", (alert_id, db.me()))
     return {"ok": True}
 
 
 # ------------------------------------------------------------------ under the hood
 @app.get("/api/tiger")
 def tiger(fresh: bool = False):
-    return {**services.tiger_stats(fresh), "listeners": realtime.subscriber_count()}
+    with db.system():
+        return {**services.tiger_stats(fresh), "listeners": realtime.subscriber_count()}
 
 
 # ------------------------------------------------------------------ live sensor simulator
 @app.post("/api/sim/{action}")
 def simulator(action: str):
+    with db.system():
+        return _simulator(action)
+
+
+def _simulator(action: str):
     if action == "start":
         return sim.start()
     if action == "stop":
@@ -486,7 +628,8 @@ def item_ml_train(item_id: int):
 
 @app.post("/api/ml/train-all")
 def ml_train_all():
-    res = forecast_ml.train_all()
+    with db.system():
+        res = forecast_ml.train_all()
     services.check_alerts()
     return res
 
@@ -496,7 +639,7 @@ def ml_overview():
     """Every trained model: which candidate won for which medicine, and by how much."""
     return db.query("""SELECT m.item_id, i.nickname, p.name AS product, m.model, m.metrics, m.risk, m.trained_at
                        FROM ml_models m JOIN items i ON i.id = m.item_id JOIN products p ON p.id = i.product_id
-                       JOIN users u ON u.id = i.user_id WHERE u.is_me ORDER BY i.id""")
+                       WHERE i.user_id = %s ORDER BY i.id""", (db.me(),))
 
 
 def _retrain_loop():
@@ -518,6 +661,108 @@ def _start_retraining():
         _th.Thread(target=_retrain_loop, daemon=True, name="ml-retrain").start()
 
 
+# ------------------------------------------------------------------ dose tracking
+class DoseIn(BaseModel):
+    taken_at: datetime | None = None
+    note: str | None = None
+
+
+@app.post("/api/items/{item_id}/doses")
+def add_dose(item_id: int, body: DoseIn):
+    _item_or_404(item_id)
+    if body.taken_at and body.taken_at > services.now() + timedelta(minutes=5):
+        raise HTTPException(422, "A dose can't be in the future.")
+    return services.log_dose(item_id, body.taken_at, (body.note or "").strip() or None)
+
+
+@app.get("/api/items/{item_id}/doses")
+def list_doses(item_id: int):
+    _item_or_404(item_id)
+    return services.doses(item_id)
+
+
+@app.delete("/api/doses/{dose_id}")
+def remove_dose(dose_id: int):
+    db.execute("DELETE FROM doses WHERE id = %s AND item_id IN (SELECT id FROM items WHERE user_id = %s)", (dose_id, db.me()))
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ pharmacist review + evidence
+@app.get("/api/review")
+def review_queue(request: Request):
+    _pharmacist(request)
+    with db.system():   # sample checklists come from any patient's item of that product
+        return services.review_queue()
+
+
+class ReviewIn(BaseModel):
+    status: str            # approved | changes_requested
+    credentials: str | None = None
+    note: str | None = None
+
+
+@app.post("/api/review/{product_id}")
+def submit_review(product_id: int, body: ReviewIn, request: Request):
+    u = _pharmacist(request)
+    if body.status not in ("approved", "changes_requested"):
+        raise HTTPException(422, "status must be approved or changes_requested")
+    if body.status == "changes_requested" and not (body.note or "").strip():
+        raise HTTPException(422, "Say what should change.")
+    with db.system():
+        return services.submit_review(product_id, u, body.status, (body.credentials or u.get("credentials") or "").strip() or None,
+                                      (body.note or "").strip() or None)
+
+
+class EvidenceDecision(BaseModel):
+    approve: bool
+
+
+@app.post("/api/evidence/{evidence_id}")
+def decide_evidence(evidence_id: int, body: EvidenceDecision, request: Request):
+    u = _pharmacist(request)
+    with db.system():
+        r = services.decide_evidence(evidence_id, body.approve, u)
+    if not r:
+        raise HTTPException(404, "unknown evidence")
+    return r
+
+
+@app.get("/api/products/{product_id}/evidence")
+def product_evidence(product_id: int):
+    return {"evidence": services.evidence_for(product_id), "review": services.review_status(product_id)}
+
+
+# ------------------------------------------------------------------ live utility outages
+@app.get("/api/outages/status")
+def outages_status():
+    return services.outage_feed_status()
+
+
+@app.post("/api/outages/refresh")
+def outages_refresh():
+    if not config.LIVE_OUTAGES:
+        raise HTTPException(409, "Live outage import is turned off (LIVE_OUTAGES=0).")
+    return services.import_live_outages()
+
+
+def _outage_loop():
+    import time as _t
+    _t.sleep(5)
+    while True:
+        try:
+            services.import_live_outages()
+        except Exception as e:  # noqa: BLE001
+            services._outage_state["error"] = type(e).__name__
+        _t.sleep(600)
+
+
+@app.on_event("startup")
+def _start_outages():
+    import threading as _th
+    if config.DATABASE_URL and config.LIVE_OUTAGES:
+        _th.Thread(target=_outage_loop, daemon=True, name="live-outages").start()
+
+
 # ------------------------------------------------------------------ exposure receipts (verifiable)
 @app.post("/api/items/{item_id}/receipt")
 def receipt(item_id: int):
@@ -526,7 +771,8 @@ def receipt(item_id: int):
 
 @app.get("/api/receipts/{code}")
 def get_receipt(code: str):
-    r = services.verify_receipt(code)
+    with db.system():   # the receipt code is the permission
+        r = services.verify_receipt(code)
     if not r:
         raise HTTPException(404, "No exposure receipt with this code.")
     return r
@@ -556,7 +802,7 @@ def list_devices():
 
 @app.delete("/api/devices/{token}")
 def remove_device(token: str):
-    db.execute("UPDATE devices SET revoked = TRUE WHERE token = %s", (token,))
+    db.execute("UPDATE devices SET revoked = TRUE WHERE token = %s AND item_id IN (SELECT id FROM items WHERE user_id = %s)", (token, db.me()))
     return {"ok": True}
 
 
@@ -608,7 +854,7 @@ def list_webhooks():
 
 @app.delete("/api/webhooks/{hook_id}")
 def remove_webhook(hook_id: int):
-    db.execute("UPDATE webhooks SET active = FALSE WHERE id = %s", (hook_id,))
+    db.execute("UPDATE webhooks SET active = FALSE WHERE id = %s AND user_id = %s", (hook_id, db.me()))
     return {"ok": True}
 
 
@@ -634,6 +880,11 @@ def list_products():
 # ------------------------------------------------------------------ demo controls
 @app.post("/api/demo/{scenario}")
 def demo(scenario: str, auto_refresh: bool = True):
+    with db.system():
+        return _demo(scenario, auto_refresh)
+
+
+def _demo(scenario: str, auto_refresh: bool):
     if scenario == "reset":
         if not config.reset_allowed():
             raise HTTPException(403, f"Reset is turned off: this server uses a shared database ({config.db_host()}) and "

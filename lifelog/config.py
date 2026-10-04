@@ -15,6 +15,15 @@ GEMINI_DISABLED = os.getenv("GEMINI_DISABLED", "").strip().lower() in ("1", "tru
 DISABLE_BACKGROUND_TRAINING = os.getenv("DISABLE_BACKGROUND_TRAINING", "").strip().lower() in ("1", "true", "yes")
 
 
+# "Try the demo" sign-in buttons for judges (set ENABLE_DEMO_LOGIN=0 for a real deployment)
+ENABLE_DEMO_LOGIN = os.getenv("ENABLE_DEMO_LOGIN", "1").strip().lower() not in ("0", "false", "no")
+# import live DTE outage areas every 10 minutes (set LIVE_OUTAGES=0 to turn off)
+LIVE_OUTAGES = os.getenv("LIVE_OUTAGES", "1").strip().lower() not in ("0", "false", "no")
+# extra Kubra StormCenter feeds as "name:instance_id:view_id;..." (e.g. Consumers Energy, IDs from its outage map)
+OUTAGE_FEEDS = [("DTE", "4fbb3ad3-e01d-4d71-9575-d453769c1171", "8ed2824a-bd92-474e-a7c4-848b812b7f9b")] + [
+    tuple(f.split(":")) for f in os.getenv("EXTRA_OUTAGE_FEEDS", "").split(";") if f.count(":") == 2]
+
+
 def db_host() -> str:
     from urllib.parse import urlparse
     return urlparse(os.getenv("DATABASE_URL", "")).hostname or "unknown"

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<title>Sign in · LIFELOG</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/style.css?v=11">
+</head>
+<body class="auth-page">
+<main class="auth">
+  <div class="brand"><img src="/static/icon.svg" alt="" width="32" height="32"><span>LIFELOG</span></div>
+  <p class="muted">How much safe life your temperature-sensitive medicines have left.</p>
+
+  <div class="card">
+    <div class="seg" role="tablist">
+      <button type="button" class="active" data-mode="login" role="tab">Sign in</button>
+      <button type="button" data-mode="signup" role="tab">Create account</button>
+    </div>
+    <form id="auth-form">
+      <label class="field" id="name-field" hidden>Your name<input type="text" id="name" autocomplete="name"></label>
+      <label class="field">Email<input type="email" id="email" autocomplete="email" required></label>
+      <label class="field">Password<input type="password" id="password" autocomplete="current-password" minlength="8" required></label>
+      <button class="btn primary big" type="submit" id="submit">Sign in</button>
+      <p id="err" class="err" role="alert"></p>
+    </form>
+  </div>
+
+  <div class="card" id="demo-card" hidden>
+    <h2>Try the demo</h2>
+    <p class="muted small">Sample data from Dearborn, Michigan. No account needed.</p>
+    <div class="row">
+      <button class="btn primary" data-demo="patient">Patient: 4 medicines</button>
+      <button class="btn" data-demo="pharmacist">Pharmacist reviewer</button>
+    </div>
+  </div>
+
+  <p class="muted small">Your medicines are private: the database itself (Postgres row-level security) only returns rows that belong to the signed-in account. Passwords are stored as salted PBKDF2 hashes.</p>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+let mode = "login";
+document.querySelectorAll("[data-mode]").forEach((b) => b.onclick = () => {
+  mode = b.dataset.mode;
+  document.querySelectorAll("[data-mode]").forEach((x) => x.classList.toggle("active", x === b));
+  $("#name-field").hidden = mode !== "signup";
+  $("#submit").textContent = mode === "signup" ? "Create account" : "Sign in";
+  $("#password").autocomplete = mode === "signup" ? "new-password" : "current-password";
+  $("#err").textContent = "";
+});
+async function go(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || "Something went wrong.");
+  location.href = "/";
+}
+$("#auth-form").onsubmit = (e) => {
+  e.preventDefault();
+  const body = { email: $("#email").value, password: $("#password").value, name: $("#name").value };
+  $("#submit").disabled = true;
+  go(mode === "signup" ? "/api/auth/signup" : "/api/auth/login", body)
+    .catch((err) => { $("#err").textContent = err.message; })
+    .finally(() => { $("#submit").disabled = false; });
+};
+document.querySelectorAll("[data-demo]").forEach((b) => b.onclick = () =>
+  go("/api/auth/demo?role=" + b.dataset.demo).catch((err) => { $("#err").textContent = err.message; }));
+fetch("/api/auth/options").then((r) => r.json()).then((o) => { $("#demo-card").hidden = !o.demo; }).catch(() => {});
+</script>
+</body>
+</html>

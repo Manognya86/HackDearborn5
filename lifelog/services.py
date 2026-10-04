@@ -3,7 +3,7 @@ import json
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import db, engine, realtime, weather
+from . import config, db, engine, realtime, weather
 
 LATE_GRACE = timedelta(minutes=10)
 
@@ -15,11 +15,11 @@ def now() -> datetime:
 # ------------------------------------------------------------------ items
 def list_items(user_id: int | None = None) -> list[dict]:
     rows = db.query("""
-        SELECT i.id, i.nickname, i.started_at, i.user_id, i.opened_at, i.expires_on, i.lot, u.name AS user_name, u.is_me,
-               p.id AS product_id, p.name AS product_name, p.model, p.source AS product_source
+        SELECT i.id, i.nickname, i.started_at, i.user_id, i.opened_at, i.expires_on, i.lot, u.name AS user_name,
+               (u.id = %(me)s) AS is_me, p.id AS product_id, p.name AS product_name, p.model, p.source AS product_source
         FROM items i JOIN users u ON u.id = i.user_id JOIN products p ON p.id = i.product_id
         WHERE (%(u)s::int IS NULL OR i.user_id = %(u)s)
-        ORDER BY u.is_me DESC, i.id""", {"u": user_id})
+        ORDER BY (u.id = %(me)s) DESC, i.id""", {"u": user_id, "me": db.me()})
     for r in rows:
         r.update(summary(r["id"], r["model"]))
         gap = [{"hours": r["stale_minutes"] / 60, "last_temp": r["current_temp"]}] if (r["stale_minutes"] or 0) > 20 else []
@@ -37,7 +37,7 @@ def item_trend(item_id: int) -> dict:
 
 def outage_for(user_id: int) -> dict | None:
     return db.one("""SELECT o.id, o.indoor_temp_c, o.est_restore_at FROM outages o JOIN users u ON ST_Contains(o.area, u.geom)
-                     WHERE o.active AND u.id = %s LIMIT 1""", (user_id,))
+                     WHERE o.active AND u.id = %s AND o.source NOT LIKE '%%-live' LIMIT 1""", (user_id,))
 
 
 def live_forecast(item_id: int, model: dict, state: dict, user_id: int) -> dict:
@@ -125,6 +125,8 @@ def item_detail(item_id: int, raw: bool = False) -> dict | None:
         "stats": item_stats(item_id, item["started_at"]),
         "zones": zone_minutes(episodes),
         "alerts": alerts_open,
+        "review": review_status(item["product_id"]),
+        "evidence": evidence_for(item["product_id"]),
     }
 
 
@@ -142,7 +144,8 @@ def cagg_watermark() -> datetime | None:
     """Materialization watermark of readings_5m: buckets before this are served from the materialized
     table, so late rows older than it stay invisible until refreshed."""
     try:
-        row = db.one("""
+        with db.system():
+            row = db.one("""
             SELECT _timescaledb_functions.to_timestamp(_timescaledb_functions.cagg_watermark(h.id)) AS wm
             FROM _timescaledb_catalog.continuous_agg ca
             JOIN _timescaledb_catalog.hypertable h ON h.id = ca.mat_hypertable_id
@@ -197,7 +200,8 @@ def repair_late(item_id: int) -> dict:
 
 # ------------------------------------------------------------------ outage rescue
 def outages_geojson() -> dict:
-    rows = db.query("""SELECT id, name, est_restore_at, indoor_temp_c, ST_AsGeoJSON(area)::json AS geom
+    rows = db.query("""SELECT id, name, est_restore_at, indoor_temp_c, source, customers_out, etr_known, updated_at,
+                              ST_AsGeoJSON(area)::json AS geom
                        FROM outages WHERE active""")
     return {"type": "FeatureCollection", "features": [
         {"type": "Feature", "geometry": r.pop("geom"), "properties": r} for r in rows]}
@@ -244,7 +248,8 @@ def rescue() -> dict:
             "refuges": r["refuges"] or [], "outage": r["outage"],
         })
     people.sort(key=lambda p: (not p["at_risk"], p["hours_left"] if p["hours_left"] is not None else 1e9))
-    users = db.query("SELECT id, name, lat, lon, can_host, is_me FROM users WHERE NOT synthetic")
+    users = db.query("""SELECT id, name, lat, lon, can_host, (id = %s) AS is_me FROM users
+                        WHERE NOT synthetic AND role = 'patient'""", (db.me(),))
     refuges = db.query("SELECT name, kind, lat, lon FROM refuges")
     return {"people": people, "outages": outages_geojson(), "users": users, "refuges": refuges}
 
@@ -342,11 +347,11 @@ def zone_minutes(episodes: list[dict]) -> list[dict]:
 # ------------------------------------------------------------------ alerts
 def alerts(mine_only: bool = False, include_resolved: bool = False) -> list[dict]:
     return db.query("""
-        SELECT a.*, i.nickname, u.name AS user_name, u.is_me
+        SELECT a.*, i.nickname, u.name AS user_name, (u.id = %(me)s) AS is_me
         FROM alerts a JOIN items i ON i.id = a.item_id JOIN users u ON u.id = i.user_id
-        WHERE (%(all)s OR a.resolved_at IS NULL) AND (NOT %(mine)s OR u.is_me)
+        WHERE (%(all)s OR a.resolved_at IS NULL) AND (NOT %(mine)s OR u.id = %(me)s)
         ORDER BY a.resolved_at IS NOT NULL, a.severity = 'warning', a.created_at DESC
-        LIMIT 100""", {"all": include_resolved, "mine": mine_only})
+        LIMIT 100""", {"all": include_resolved, "mine": mine_only, "me": db.me()})
 
 
 def check_alerts() -> None:
@@ -567,7 +572,10 @@ def _snapshot(item_id: int, as_of) -> dict:
         GROUP BY 1, 2 HAVING sum(burn) >= 0.0005 ORDER BY 1, 2""", (item_id, as_of))  # skip door-opening blips
     used = db.one("SELECT used FROM item_timeline(%s) WHERE bucket < %s ORDER BY bucket DESC LIMIT 1", (item_id, as_of))
     n = db.one("SELECT count(*) AS n FROM readings WHERE item_id = %s AND ts < %s", (item_id, as_of))["n"]
-    return {"used": round(used["used"], 6) if used else 0.0, "readings": n, "exposure_days": days}
+    doses_ = db.query("""SELECT to_char(taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI"Z"') AS taken_at,
+                                round(budget_at_dose::numeric, 4)::float8 AS budget, status_at_dose AS status
+                         FROM doses WHERE item_id = %s AND taken_at < %s ORDER BY taken_at""", (item_id, as_of))
+    return {"used": round(used["used"], 6) if used else 0.0, "readings": n, "exposure_days": days, "doses": doses_}
 
 
 def _digest(item: dict, as_of, snap: dict) -> str:
@@ -610,7 +618,10 @@ def verify_receipt(code: str) -> dict | None:
     if not same:
         why = ("Readings for this period changed after the receipt was made: late sensor data arrived, or the record "
                "was edited." if snap["readings"] != r["payload"]["readings"] else
-               "The calculated exposure for this period changed after the receipt was made.")
+               "The dose log for this period was edited after the receipt was made."
+               if snap.get("doses") != r["payload"].get("doses") else
+               "The calculated exposure for this period changed after the receipt was made (for example, a pharmacist "
+               "approved new heat-tolerance evidence for this medicine).")
     return {"code": r["code"], "created_at": r["created_at"], "as_of": r["as_of"], "payload": r["payload"],
             "digest": r["digest"], "matches": same, "reason": why}
 
@@ -630,18 +641,20 @@ def device_for(token: str) -> dict | None:
 def devices() -> list[dict]:
     return db.query("""SELECT d.token, d.label, d.created_at, d.last_seen, d.readings, i.id AS item_id, i.nickname
                        FROM devices d JOIN items i ON i.id = d.item_id JOIN users u ON u.id = i.user_id
-                       WHERE u.is_me AND NOT d.revoked ORDER BY d.created_at DESC""")
+                       WHERE u.id = %s AND NOT d.revoked ORDER BY d.created_at DESC""", (db.me(),))
 
 
 def create_webhook(url: str) -> dict:
     import secrets
     secret = "whsec_" + secrets.token_urlsafe(24)
-    hook = db.one("INSERT INTO webhooks (url, secret) VALUES (%s, %s) RETURNING id, url, created_at", (url, secret))
+    hook = db.one("INSERT INTO webhooks (url, secret, user_id) VALUES (%s, %s, %s) RETURNING id, url, created_at",
+                  (url, secret, db.me()))
     return {**hook, "secret": secret}
 
 
 def webhooks() -> list[dict]:
-    return db.query("SELECT id, url, created_at, last_status, last_at FROM webhooks WHERE active ORDER BY id DESC")
+    return db.query("SELECT id, url, created_at, last_status, last_at FROM webhooks WHERE active AND user_id = %s ORDER BY id DESC",
+                    (db.me(),))
 
 
 def deliver_webhooks(event: dict) -> None:
@@ -651,7 +664,9 @@ def deliver_webhooks(event: dict) -> None:
     import json as _json
 
     import httpx
-    hooks = db.query("SELECT id, url, secret FROM webhooks WHERE active")
+    # only the webhooks of the account that owns this medicine
+    hooks = db.query("""SELECT w.id, w.url, w.secret FROM webhooks w JOIN items i ON i.user_id = w.user_id
+                        WHERE w.active AND i.id = %s""", (event.get("item_id"),))
     if not hooks:
         return
     item = db.one("""SELECT i.nickname, p.name AS product FROM items i JOIN products p ON p.id = i.product_id
@@ -669,6 +684,195 @@ def deliver_webhooks(event: dict) -> None:
         except httpx.HTTPError as e:
             status = type(e).__name__
         db.execute("UPDATE webhooks SET last_status = %s, last_at = now() WHERE id = %s", (status, h["id"]))
+
+
+# ------------------------------------------------------------------ dose tracking
+def state_at(item_id: int, at: datetime) -> dict:
+    """The medicine's budget, zone and temperature at a past moment, and the status it had then."""
+    item = db.one("""SELECT i.id, i.opened_at, i.expires_on, p.model FROM items i JOIN products p ON p.id = i.product_id
+                     WHERE i.id = %s""", (item_id,))
+    if not item:
+        return {}
+    row = db.one("""SELECT bucket, avg_temp, zone, used FROM item_timeline(%s) WHERE bucket <= %s
+                    ORDER BY bucket DESC LIMIT 1""", (item_id, at))
+    remaining = 1 - row["used"] if row else 1.0
+    zone = row["zone"] if row else "No data"
+    dates = engine.dates_info(item["opened_at"], item["expires_on"], item["model"].get("in_use_days"), at)
+    gap_min = (at - row["bucket"]).total_seconds() / 60 if row else None
+    st = engine.status_of({"remaining": remaining, "stale_minutes": max(0.0, (gap_min or 0) - 5)}, remaining, zone, dates)
+    return {"remaining": remaining, "zone": zone, "temp": row["avg_temp"] if row else None, "status": st}
+
+
+def log_dose(item_id: int, taken_at: datetime | None, note: str | None) -> dict:
+    at = taken_at or now()
+    s = state_at(item_id, at)
+    return db.one("""INSERT INTO doses (item_id, taken_at, note, budget_at_dose, status_at_dose, temp_at_dose)
+                     VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+                  (item_id, at, note, s.get("remaining"), s.get("status", {}).get("code"), s.get("temp")))
+
+
+def doses(item_id: int, limit: int = 60) -> list[dict]:
+    """Doses with the status recorded when taken AND re-checked against today's data (late sensor uploads
+    can change what we know about the past)."""
+    out = []
+    for d in db.query("SELECT * FROM doses WHERE item_id = %s ORDER BY taken_at DESC LIMIT %s", (item_id, limit)):
+        now_ = state_at(item_id, d["taken_at"])
+        d["status_now"] = now_["status"]["code"]
+        d["budget_now"] = now_["remaining"]
+        d["changed"] = d["status_now"] != d["status_at_dose"] or abs((d["budget_at_dose"] or 0) - now_["remaining"]) > 0.005
+        out.append(d)
+    return out
+
+
+# ------------------------------------------------------------------ pharmacist review + evidence
+def review_status(product_id: int) -> dict | None:
+    return db.one("""SELECT status, reviewer, credentials, note, created_at FROM reviews WHERE product_id = %s
+                     ORDER BY created_at DESC LIMIT 1""", (product_id,))
+
+
+def evidence_for(product_id: int) -> list[dict]:
+    return db.query("SELECT * FROM evidence WHERE product_id = %s ORDER BY id", (product_id,))
+
+
+def review_queue() -> list[dict]:
+    """Every product with its rules, a sample of the care checklist patients see, evidence and last review."""
+    out = []
+    for p in db.query("SELECT id, name, model, source, source_label, source_url FROM products ORDER BY name"):
+        sample = db.one("SELECT i.* FROM items i WHERE i.product_id = %s ORDER BY i.id LIMIT 1", (p["id"],))
+        checklist = []
+        if sample:
+            state = {"zone": "Labeled storage", "remaining": 1.0, "stale_minutes": 0}
+            checklist = [c["text"] for c in precautions({**sample, "model": p["model"]}, state, [], []) if c["level"] == "info"]
+        out.append({**p, "checklist": checklist, "evidence": evidence_for(p["id"]), "review": review_status(p["id"])})
+    return out
+
+
+def submit_review(product_id: int, reviewer: dict, status: str, credentials: str | None, note: str | None) -> dict:
+    return db.one("""INSERT INTO reviews (product_id, status, reviewer_id, reviewer, credentials, note)
+                     VALUES (%s, %s, %s, %s, %s, %s) RETURNING *""",
+                  (product_id, status, reviewer["id"], reviewer["name"], credentials, note))
+
+
+def decide_evidence(evidence_id: int, approve: bool, reviewer: dict) -> dict:
+    """Approving replaces the product's assumption with the cited value, then recalculates every budget for that
+    product: the continuous aggregate joins products, and changes to joined tables are not tracked automatically."""
+    ev = db.one("SELECT * FROM evidence WHERE id = %s", (evidence_id,))
+    if not ev:
+        return {}
+    db.execute("UPDATE evidence SET status = %s, reviewed_by = %s, reviewed_at = now() WHERE id = %s",
+               ("approved" if approve else "rejected", reviewer["name"], evidence_id))
+    if approve:
+        p = db.one("SELECT model FROM products WHERE id = %s", (ev["product_id"],))
+        m = p["model"]
+        m[ev["field"]] = ev["proposed_value"]
+        if ev["field"] == "above_limit_budget_hours":
+            m["above_limit_is_assumption"] = False
+            m["above_limit_quote"] = f"{ev['finding']} ({ev['citation']}). {ev['derivation']}"
+        db.execute("UPDATE products SET model = %s WHERE id = %s", (json.dumps(m), ev["product_id"]))
+        threading.Thread(target=_recalculate_all, daemon=True).start()
+    return {**ev, "status": "approved" if approve else "rejected", "recalculating": approve}
+
+
+def _recalculate_all() -> None:
+    with db.system():
+        with db.conn(autocommit=True) as c:
+            db.call_refresh(c, "CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
+            db.call_refresh(c, "CALL refresh_continuous_aggregate('readings_1d', NULL, time_bucket('1 day', now()))")
+        check_alerts()
+
+
+# ------------------------------------------------------------------ live utility outages (Kubra StormCenter)
+def decode_polyline(s: str) -> list[tuple[float, float]]:
+    """Google encoded polyline -> [(lat, lon)], precision 5 (the format Kubra uses for outage areas)."""
+    coords, i, lat, lon = [], 0, 0, 0
+    while i < len(s):
+        vals = []
+        for _ in range(2):
+            shift = result = 0
+            while True:
+                b = ord(s[i]) - 63
+                i += 1
+                result |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20:
+                    break
+            vals.append(~(result >> 1) if result & 1 else result >> 1)
+        lat += vals[0]
+        lon += vals[1]
+        coords.append((lat / 1e5, lon / 1e5))
+    return coords
+
+
+_outage_state: dict = {"last_import": None, "error": None, "areas": 0, "customers": 0}
+
+
+def import_live_outages() -> dict:
+    """Pull each utility feed's current outage areas (by ZIP), store them as PostGIS polygons with customers out
+    and the estimated restoration time, and close areas that are no longer out."""
+    import httpx
+    headers = {"User-Agent": "LIFELOG (Hack Dearborn 5 medicine-safety project)"}
+    seen, total_c, err, ok_sources = [], 0, None, []
+    # a house without power drifts toward the outdoor temperature; never assume colder than 20°C (it holds heat)
+    from . import forecast_ml
+    wx = forecast_ml.outdoor(config.HOME_LAT, config.HOME_LON)
+    past = [v for t, v in wx.items() if t <= now()]
+    indoor = max(20.0, past[-1]) if past else 22.0
+    with db.system():
+        for name, instance, view in config.OUTAGE_FEEDS:
+            try:
+                base = "https://kubra.io"
+                st = httpx.get(f"{base}/stormcenter/api/v1/stormcenters/{instance}/views/{view}/currentState?preview=false",
+                               headers=headers, timeout=20).json()
+                slug = st["data"]["interval_generation_data"]
+                areas = httpx.get(f"{base}/{slug}/public/thematic-2/thematic_areas.json", headers=headers, timeout=20).json()
+            except Exception as e:  # network or format change: keep the last known areas
+                err = f"{name}: {type(e).__name__}"
+                continue
+            ok_sources.append(f"{name.lower()}-live")
+            for a in areas.get("file_data", []):
+                d = a.get("desc", {})
+                cust = (d.get("cust_a") or {}).get("val") or 0
+                rings = (a.get("geom") or {}).get("a") or []
+                if not cust or not rings:
+                    continue
+                pts = decode_polyline(rings[0])
+                if len(pts) < 4:
+                    continue
+                if pts[0] != pts[-1]:
+                    pts.append(pts[0])
+                wkt = "POLYGON((" + ",".join(f"{lon} {lat}" for lat, lon in pts) + "))"
+                ext = f"{name}:{a.get('title') or a.get('id')}"
+                etr = d.get("etr")
+                etr_ok = bool(etr) and "NULL" not in str(etr)
+                # one row per utility area, updated in place every import
+                db.execute("""
+                    INSERT INTO outages (name, area, started_at, est_restore_at, indoor_temp_c, source, active,
+                                         external_id, customers_out, etr_known, updated_at)
+                    SELECT %(name)s, g, coalesce(%(start)s::timestamptz, now()),
+                           coalesce(%(etr)s::timestamptz, now() + INTERVAL '4 hours'),
+                           %(indoor)s,
+                           %(src)s, TRUE, %(ext)s, %(cust)s, %(etr_ok)s, now()
+                    FROM (SELECT (ST_Dump(ST_MakeValid(ST_GeomFromText(%(wkt)s, 4326)))).geom AS g) d
+                    WHERE GeometryType(g) = 'POLYGON' ORDER BY ST_Area(g) DESC LIMIT 1
+                    ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO UPDATE SET
+                        name = EXCLUDED.name, area = EXCLUDED.area, started_at = EXCLUDED.started_at,
+                        est_restore_at = EXCLUDED.est_restore_at, indoor_temp_c = EXCLUDED.indoor_temp_c,
+                        active = TRUE, customers_out = EXCLUDED.customers_out, etr_known = EXCLUDED.etr_known,
+                        updated_at = now()""",
+                           {"name": f"{name} outage · ZIP {a.get('title')} ({cust} customers)", "start": d.get("start_time"),
+                            "etr": etr if etr_ok else None, "src": f"{name.lower()}-live",
+                            "ext": ext, "cust": cust, "etr_ok": etr_ok, "wkt": wkt, "indoor": round(indoor, 1)})
+                seen.append(ext)
+                total_c += cust
+        # areas restored since the last import (only for feeds that answered this time)
+        db.execute("""UPDATE outages SET active = FALSE WHERE source = ANY(%s) AND active
+                      AND NOT (external_id = ANY(%s))""", (ok_sources, seen))
+    _outage_state.update(last_import=now(), error=err, areas=len(seen), customers=total_c)
+    return dict(_outage_state)
+
+
+def outage_feed_status() -> dict:
+    return dict(_outage_state, feeds=[f[0] for f in config.OUTAGE_FEEDS], enabled=config.LIVE_OUTAGES)
 
 
 # ------------------------------------------------------------------ caregiver share links
@@ -700,7 +904,7 @@ _forecast_cache: dict = {}
 def home_forecast() -> list[dict]:
     """Next 48 h of hourly temperature at the user's home, cached for an hour."""
     import time
-    me = db.one("SELECT lat, lon FROM users WHERE is_me")
+    me = db.one("SELECT lat, lon FROM users WHERE id = %s", (db.me(),))
     if not me:
         return []
     hit = _forecast_cache.get("v")
@@ -737,7 +941,7 @@ def precautions(item: dict, state: dict, gaps: list[dict], whatif: list[dict]) -
     if any(g.get("ongoing") for g in gaps):
         out.append({"level": "warning", "text": "The sensor has stopped reporting. Check its battery and that it's within Bluetooth range."})
     if db.one("""SELECT 1 AS x FROM outages o JOIN users u ON ST_Contains(o.area, u.geom)
-                 WHERE o.active AND u.id = %s""", (item["user_id"],)):
+                 WHERE o.active AND u.id = %s AND o.source NOT LIKE '%%-live'""", (item["user_id"],)):
         out.append({"level": "warning", "text": "Power is out. Keep the fridge door closed: a closed fridge stays cold for about 4 hours."
                     if fridge else "Power is out. Keep it in the coolest room, away from windows."})
     if state["remaining"] < 0.5:

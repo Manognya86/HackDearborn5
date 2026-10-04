@@ -148,8 +148,45 @@ This is a decision-support prototype, not medical advice.
 - **An open format for medicine storage rules**: `GET /api/schema/stability-model` (JSON Schema), `GET /api/products`,
   and the full API at `/docs`.
 
+## Accounts, privacy and review
+
+- **Sign-in.** Email + password accounts (PBKDF2-SHA256, 310,000 iterations, per-user salt) with an HttpOnly,
+  SameSite=Lax session cookie. `/login` also has **Try the demo** buttons for the seeded patient and a demo pharmacist
+  (`ENABLE_DEMO_LOGIN=0` turns them off).
+- **Privacy enforced by Postgres, not just the app.** Every signed-in request runs its queries as the restricted role
+  `lifelog_app` with `lifelog.user_id` set for that transaction (`sql/security.sql`, `lifelog/db.py`). Row-level
+  security policies then return only that person's medicines, alerts, receipts, device keys, doses, forecasts,
+  share links and webhooks, even if a query forgets a `WHERE`. The role can't read emails, password hashes or sessions
+  at all. Community features (outage rescue, porch heat) and background jobs run as the owner on purpose.
+  If a hosted database doesn't allow creating the role, the app still filters by owner itself and `/api/health`
+  reports `row_level_security: false`.
+- **Pharmacist review.** A pharmacist account sees every medicine's rules and the exact care-checklist wording patients
+  get, and approves it or requests changes (with credentials and a note). Patients see "Rules and wording reviewed by …"
+  or "Not yet reviewed by a pharmacist" on each medicine.
+- **Better heat-tolerance data.** Two of LIFELOG's 8-hour assumptions now have published evidence waiting for a
+  pharmacist. Nothing changes until it is approved; approval updates the medicine's rules and recalculates every
+  patient's history in Tiger Data (full refresh of `readings_5m` and `readings_1d`, since the aggregate joins products).
+
+  | Medicine | Evidence | Derived tolerance just above 30°C |
+  |---|---|---|
+  | EpiPen (epinephrine 1:1,000) | Grant et al., *Am J Emerg Med* 1994 (PMID 8179739): no significant loss after 12 weeks cycled to 70°C 8 h/day; Parish et al. 2016 systematic review (PMID 27221065) | 672 h at 70°C × 2⁴ = **10,752 h** (lower bound) |
+  | Lantus (insulin glargine) | Human insulin lost 18% at 37°C over 28 days (Vimalavathini & Gitanjali 2009, via the 2023 review PMC10627263) | 5% loss threshold: 672 × 5/18 = 187 h at 37°C × 2^0.7 = **303 h** (extrapolated from human insulin: the pharmacist decides) |
+
+  Both use the engine's doubling-per-10°C rule, which is itself an assumption and is shown with the evidence.
+- **Dose tracking.** "I took a dose" stores the medicine's status, life budget and temperature at that moment
+  (from Tiger Data). The Doses section rechecks every logged dose against today's data, so a late sensor upload that
+  changes the past is flagged ("Rechecked with today's data: …"). Doses are part of the exposure receipt, and Ask LIFELOG
+  has a `get_doses` tool ("Was the dose I took last Tuesday still good?").
+- **Real outage data.** Every 10 minutes the server imports DTE Energy's public outage map (Kubra StormCenter: outage
+  areas by ZIP code with customers out and estimated restoration), decodes the area polygons into PostGIS and updates
+  them in place; restored areas close automatically. Utilities report by ZIP, so LIFELOG says power *may* be out and
+  doesn't apply the no-power warming model unless an outage is confirmed. More utilities on Kubra (e.g. Consumers
+  Energy) can be added with `EXTRA_OUTAGE_FEEDS="Name:instanceId:viewId"`; `LIVE_OUTAGES=0` turns the import off.
+  The demo storm scenario still works alongside it.
+
 ## Safety switches
 - `GEMINI_DISABLED=1`: no Gemini request ever leaves the server (for testing without spending quota).
+- `LIVE_OUTAGES=0`: no requests to the utility outage map. `ENABLE_DEMO_LOGIN=0`: no demo sign-in buttons.
 - **Reset & seed data** only works on a local database; on a shared/cloud database it is refused unless
   `ALLOW_DEMO_RESET=1`. The button also asks for confirmation.
 
@@ -201,7 +238,8 @@ cp .env.example .env        # fill GEMINI_API_KEY and DATABASE_URL
 .venv/Scripts/python scripts/setup_db.py
 .venv/Scripts/uvicorn lifelog.app:app --port 8000
 ```
-Open http://localhost:8000.
+Open http://localhost:8000 and press **Try the demo → Patient** (or create an account).
+Upgrading an existing database without losing data: `.venv/Scripts/python scripts/migrate.py`.
 
 ### Database options
 - **Tiger Cloud (for judging):** install the [Tiger CLI](https://github.com/timescale/tiger-cli)
@@ -277,6 +315,7 @@ model per day, and one chatbot question uses 3 to 5** (one per tool round): enab
 project before judging.
 
 ## 5-minute demo script
+0. **Sign in:** `/login` → *Try the demo → Patient*. (A new account starts empty and can't see the demo patient's data.)
 1. **Demo controls → Reset.** My medicines: four medicines near 100%. The Lantus spare shows *sensor silent*; the Victoza pen must be used within 3 days of its in-use period. (If scale data is loaded for judging, skip Reset: it returns to the small seed.)
 2. **Add medicine:** upload a real label photo. Gemini builds the model with quotes. Track it.
 3. **Demo controls → EpiPen: hot car.** Open the EpiPen: budget drops to ~45%, "Above labeled limit, peak 48°C". The what-if table shows that moving it indoors saves it. Click **Is it safe to use?**
@@ -285,7 +324,12 @@ project before judging.
 6. **Refill letter** on the insulin. Then **Porch heat** → **Gemini pharmacy brief**.
 7. **Alerts** tab: the hot-car and outage alerts were opened by a job running inside Tiger; the sensor-silent alert resolved itself when the late data arrived.
 8. **Ask LIFELOG:** "Which of my medicines is in the worst shape, and why?" Gemini calls the tools and shows which.
-9. **Under the hood:** compression ratio, scheduled jobs, rollup vs raw timings (the 30-day calendar is ~200× faster from `readings_1d` at scale). Optionally **Start live sensors** and watch the dashboard move.
+9. **Doses:** open the Victoza pen → *Doses taken*: two weeks of 8 am doses, each with the status it had then.
+   Tap **I took a dose**, then make an exposure receipt: the dose is in it.
+10. **Pharmacist:** sign out → *Try the demo → Pharmacist reviewer*. Approve the EpiPen wording and its new evidence
+    (10,752 h). Back as the patient, rerun *EpiPen: hot car*: the same 2 hours now cost a fraction of what they did,
+    and the label section cites the paper. **Outage rescue** shows the live DTE outage map next to the demo storm.
+11. **Under the hood:** compression ratio, scheduled jobs, rollup vs raw timings (the 30-day calendar is ~200× faster from `readings_1d` at scale). Optionally **Start live sensors** and watch the dashboard move.
 
 ## API
 `GET /api/health`, `GET /api/items`, `GET|PATCH /api/items/{id}` (PATCH: `opened_at`, `expires_on`, `lot`),
@@ -294,7 +338,13 @@ project before judging.
 `GET /api/rescue`, `POST /api/rescue/plan`, `GET /api/porch`, `POST /api/porch/brief`, `GET /api/alerts`, `POST /api/alerts/check`,
 `POST /api/alerts/{id}/ack`, `POST /api/share`, `GET /api/shares`, `GET|DELETE /api/share/{token}`, `GET /s/{token}` (caregiver page),
 `GET /api/tiger[?fresh=1]`, `POST /api/sim/{start|stop|status}`, `POST /api/ask`,
-`POST /api/demo/{reset|hot_car|late_upload|storm|clear_storm}`.
+`POST /api/demo/{reset|hot_car|late_upload|storm|clear_storm}`,
+`POST /api/auth/login|signup|logout|demo?role=patient|pharmacist`, `GET /api/me`,
+`GET|POST /api/items/{id}/doses`, `DELETE /api/doses/{id}`, `GET /api/review`, `POST /api/review/{product_id}`,
+`POST /api/evidence/{id}` (`{"approve": true}`), `GET /api/products/{id}/evidence`,
+`GET /api/outages/status`, `POST /api/outages/refresh`.
+Everything under `/api` needs a session cookie except `/api/auth/*`, `/api/health`, `/api/receipts/*`, `/api/schema/*`
+and `GET /api/share/{token}`; sensors use `POST /v1/readings` with a device key.
 
 `POST /api/ingest` body:
 ```json

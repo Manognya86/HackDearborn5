@@ -26,6 +26,7 @@ function toast(msg, kind = "") {
 }
 async function api(path, opts = {}) {
   const r = await fetch(path, opts);
+  if (r.status === 401 && !path.startsWith("/api/auth/")) { location.href = "/login"; throw new Error("Please sign in."); }
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.detail || `${r.status} ${r.statusText}`);
   return body;
@@ -57,7 +58,8 @@ function ring(value, size, stroke, code, label = "") {
 
 // ------------------------------------------------------------------ navigation
 const TITLES = { meds: "My medicines", alerts: "Alerts", ask: "Ask LIFELOG", rescue: "Outage rescue", add: "Add medicine",
-  voice: "Voice report", trip: "Trip check", porch: "Porch heat", tiger: "Under the hood", dev: "For developers", demo: "Demo controls" };
+  voice: "Voice report", trip: "Trip check", porch: "Porch heat", tiger: "Under the hood", dev: "For developers", demo: "Demo controls",
+  review: "Pharmacist review" };
 const loaders = {};
 let currentView = "meds";
 document.addEventListener("click", (e) => {
@@ -105,7 +107,8 @@ async function health() {
 }
 
 // ------------------------------------------------------------------ medicines list
-let currentItem = null, chart = null, myItems = [], currentModel = null;
+let currentItem = null, chart = null, myItems = [], currentModel = null, currentEvidence = [];
+const STATUS_LABEL = { USE: "Safe to use", USE_SOON: "OK to use, act soon", CHECK: "Check the sensor", ASK_PHARMACIST: "Check with your pharmacist", DO_NOT_USE: "Do not use" };
 async function loadItems() {
   const items = await api("/api/items");
   myItems = items;
@@ -142,7 +145,7 @@ async function openItem(id, { quiet = false } = {}) {
   $$(".med").forEach((el) => el.classList.toggle("active", +el.dataset.id === id));
   const d = await api(`/api/items/${id}`);
   const s = d.state, m = d.item.model, st = d.status;
-  currentModel = m;
+  currentModel = m; currentEvidence = d.evidence || [];
   const uncertain = d.worst_case < s.remaining - 0.01;
   const urgent = d.precautions.filter((p) => p.level !== "info");
   const top = urgent[0];
@@ -155,6 +158,9 @@ async function openItem(id, { quiet = false } = {}) {
         <div>
           <h2>${esc(d.item.nickname)}</h2>
           <div class="muted small">${esc(d.item.product_name)}</div>
+          ${d.review?.status === "approved"
+            ? `<div class="review-pill ok">${icon("check")}Rules and wording reviewed by ${esc(d.review.reviewer)}${d.review.credentials ? `, ${esc(d.review.credentials)}` : ""} · ${fmt(d.review.created_at)}</div>`
+            : `<div class="review-pill">${icon("info")}Not yet reviewed by a pharmacist${d.review?.status === "changes_requested" ? " (changes requested)" : ""}</div>`}
           <div class="status"><span class="pill ${st.code}">${esc(st.label)}</span><span class="why">${esc(st.why)}</span></div>
           <div class="facts">
             <span>${s.stale_minutes > 20 ? "Last reading" : "Now"} <b>${temp(s.current_temp)}</b></span>
@@ -179,6 +185,7 @@ async function openItem(id, { quiet = false } = {}) {
       ${top ? `<div class="todo ${top.level}">${icon("alert")}<div><b>Do this now</b><span>${esc(top.text)}</span></div></div>`
         : `<div class="todo ok">${icon("check")}<div><b>Nothing to do</b><span>Keep storing it the way you are.</span></div></div>`}
       <div class="actions">
+        <button class="btn primary" id="dose-btn" title="Records this medicine's status at the moment you take it">${icon("check")}I took a dose</button>
         <button class="btn ai" id="advice-btn">${icon("spark")}Is it safe to use?</button>
         <label class="btn" for="photo" title="Needs Gemini">${icon("camera")}Photo check</label><input type="file" id="photo" accept="image/*" capture="environment" hidden>
         <button class="btn" id="letter-btn">${icon("file")}Refill letter</button>
@@ -204,6 +211,10 @@ async function openItem(id, { quiet = false } = {}) {
         <summary>What used the budget <span class="muted">${d.burners.length ? `${d.burners.length} episode${d.burners.length === 1 ? "" : "s"}` : "nothing yet"}</span></summary>
         ${d.burners.length ? d.burners.map((b) => `<div class="burn-row"><div>${esc(b.zone)}<div class="muted small">${fmt(b.started)} · ${hrs(b.minutes / 60)} · peak ${temp(b.peak_temp)}</div></div>
           <div class="burn-bar" style="width:${(b.burn / maxBurn) * 100}%"></div><div class="num">−${pct(b.burn, 1)}</div></div>`).join("") : `<p class="muted">It has stayed within the label's limits.</p>`}
+      </details>
+      <details class="fold" data-k="doses" ${openFolds.includes("doses") ? "open" : ""}>
+        <summary>Doses taken <span class="muted">was each dose still good?</span></summary>
+        <div id="doses-body" class="muted">Loading…</div>
       </details>
       <details class="fold" data-k="ml" ${openFolds.includes("ml") || !isMobile() ? "open" : ""}>
         <summary>Next 24 hours <span class="muted">forecast from a model trained for this medicine</span></summary>
@@ -249,14 +260,17 @@ async function openItem(id, { quiet = false } = {}) {
         ${(m.bands || []).map((b) => `<blockquote>${esc(b.quote)}</blockquote>`).join("")}
         ${m.freeze_discard ? `<blockquote>${esc(m.freeze_quote)}</blockquote>` : ""}
         ${(m.discard_rules || []).map((r) => `<blockquote>${esc(r)}</blockquote>`).join("")}
-        <p class="muted small">Above the highest labeled limit: ${m.above_limit_budget_hours} h of tolerance, halving for every 10°C hotter${m.above_limit_is_assumption ? " (LIFELOG's assumption: the label doesn't say)" : ""}.${m.notes ? " " + esc(m.notes) : ""}</p>
+        <p class="muted small">Above the highest labeled limit: ${m.above_limit_budget_hours.toLocaleString()} h of tolerance, halving for every 10°C hotter${m.above_limit_is_assumption ? " (LIFELOG's assumption: the label doesn't say)" : d.evidence.some((e) => e.status === "approved") ? " (from published evidence, approved by a pharmacist)" : ""}.${m.notes ? " " + esc(m.notes) : ""}</p>
+        ${d.evidence.map((e) => `<div class="evidence"><span class="st ${e.status}">${e.status === "proposed" ? "Evidence awaiting pharmacist review" : e.status === "approved" ? `Evidence approved by ${esc(e.reviewed_by || "a pharmacist")}` : "Evidence rejected by a pharmacist"}</span>
+          <p class="small">${esc(e.finding)}</p><p class="muted small">${esc(e.derivation)}</p>
+          <p class="muted small">${e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.citation)}</a>` : esc(e.citation)} · ${e.status === "approved" ? "changed" : "would change"} ${e.current_value} h → ${e.proposed_value.toLocaleString()} h</p></div>`).join("")}
       </details>
     </div>`;
 
   if (keepAi) $("#ai-box").innerHTML = keepAi;
   if ($("details[data-k=chart]").open) drawChart(d);
   $("details[data-k=chart]").addEventListener("toggle", (e) => e.target.open && drawChart(d));
-  for (const [k, fn] of [["ml", loadMl], ["history", loadHistory], ["recalls", loadRecalls]]) {
+  for (const [k, fn] of [["doses", loadDoses], ["ml", loadMl], ["history", loadHistory], ["recalls", loadRecalls]]) {
     const el = $(`details[data-k=${k}]`);
     if (el.open) fn(id);
     el.addEventListener("toggle", () => el.open && fn(id));
@@ -274,6 +288,11 @@ async function openItem(id, { quiet = false } = {}) {
   const acc = $("details[data-k=accuracy]");
   if (acc.open) loadAccuracy(id);
   acc.addEventListener("toggle", () => acc.open && loadAccuracy(id));
+  $("#dose-btn").onclick = (e) => busy(e.currentTarget, async () => {
+    const r = await post(`/api/items/${id}/doses`, {});
+    toast(`Dose logged: ${STATUS_LABEL[r.status_at_dose] || r.status_at_dose} · ${pct(r.budget_at_dose)} budget left`);
+    const f = $("details[data-k=doses]"); if (f.open) loadDoses(id); else f.open = true;
+  });
   $("#advice-btn").onclick = (e) => busy(e.currentTarget, async () => renderVerdict(await post(withLang(`/api/items/${id}/advice`))));
   $("#photo").onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
@@ -311,6 +330,32 @@ function renderVerdict(v) {
   $("#ai-box").innerHTML = `<div class="ai-box" dir="auto">${aiTag(v, "Gemini · based on your data and the label")}
     <div class="verdict ${esc(v.verdict)}">${esc(v.headline)}</div><p>${esc(v.explanation)}</p>
     <ul>${v.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>${v.cited_quotes.map((q) => `<blockquote>${esc(q)}</blockquote>`).join("")}</div>`;
+}
+
+async function loadDoses(id) {
+  const list = await api(`/api/items/${id}/doses`);
+  const body = $("#doses-body"); if (!body) return;
+  body.classList.remove("muted");
+  const changed = list.filter((x) => x.changed);
+  body.innerHTML = (!list.length ? `<p class="small">No doses logged yet. Tap <b>I took a dose</b> when you use it: LIFELOG records what the medicine's status was at that moment, so you can answer "was that dose still good?" later.</p>` : `
+    ${changed.length ? `<div class="banner warn">${changed.length} dose${changed.length === 1 ? "'s" : "s'"} status changed after it was logged (late sensor data or a rules update). Ask your pharmacist if a dose marked below needs attention.</div>` : ""}
+    ${list.map((x) => `<div class="dose-row"><div><b>${fmt(x.taken_at)}</b>${x.note ? ` · <span class="muted">${esc(x.note)}</span>` : ""}
+        <div class="small">${x.temp_at_dose != null ? `${temp(x.temp_at_dose)} · ` : ""}${pct(x.budget_at_dose)} budget left</div>
+        ${x.changed ? `<div class="changed">${icon("alert")} Rechecked with today's data: ${esc(STATUS_LABEL[x.status_now] || x.status_now)}, ${pct(x.budget_now)} budget</div>` : ""}</div>
+      <div class="row" style="margin:0"><span class="pill ${esc(x.status_at_dose)}">${esc(STATUS_LABEL[x.status_at_dose] || x.status_at_dose)}</span>
+        <button class="icon-btn" data-del-dose="${x.id}" aria-label="Delete this dose" title="Delete">✕</button></div></div>`).join("")}`)
+    + `<form id="dose-past" class="dates-form" style="margin-top:10px"><label class="small">Took a dose earlier?<input type="datetime-local" id="dose-at"></label>
+       <label class="small">Note<input type="text" id="dose-note" placeholder="optional"></label><button class="btn" type="submit">Log it</button></form>
+       <p class="muted small">Each dose is part of this medicine's exposure receipt, so a pharmacist can verify it.</p>`;
+  $$("[data-del-dose]").forEach((b) => b.onclick = async () => { await api(`/api/doses/${b.dataset.delDose}`, { method: "DELETE" }); loadDoses(id); });
+  $("#dose-past").onsubmit = (e) => {
+    e.preventDefault();
+    const at = $("#dose-at").value;
+    busy(e.submitter, async () => {
+      await post(`/api/items/${id}/doses`, { taken_at: at ? new Date(at).toISOString() : null, note: $("#dose-note").value });
+      toast("Dose logged"); loadDoses(id);
+    });
+  };
 }
 
 let mlChart = null;
@@ -409,10 +454,11 @@ async function loadAccuracy(id) {
     </table></div>
     <p class="small muted">${Math.abs(a.averaging_error) < 0.00005 ? "Averaging each 5 minutes first would give the same answer here." : `Averaging each 5 minutes first would ${a.averaging_error > 0 ? "overstate" : "understate"} the budget by ${pct(Math.abs(a.averaging_error), 2)}.`} LIFELOG scores every reading instead: damage jumps at the label's limits and grows exponentially above them, so an average hides short spikes and smears readings that straddle a limit.</p>
     <h3>What the answer depends on</h3>
-    ${a.assumption_on_label ? `<p>The heat tolerance comes from the label itself.</p>`
+    ${a.assumption_on_label ? `<p>The heat tolerance (${currentModel.above_limit_budget_hours.toLocaleString()} h just above the label limit) comes from ${currentEvidence.some((e) => e.status === "approved") ? "published evidence that a pharmacist approved (see Label rules)" : "the label itself"}. The table shows how the answer would change if it were different.</p>`
       : new Set(sens.map((x) => Math.round(x.remaining * 100))).size === 1
         ? `<p>The label doesn't say how long it tolerates heat above its limit (LIFELOG assumes 8 hours), but that doesn't matter here: this medicine has never been above its labeled limit.</p>`
         : `<p>The label doesn't say how long it tolerates heat above its limit; LIFELOG assumes <b>8 hours</b>. Here is how the answer would change:</p>`}
+    ${currentEvidence.some((e) => e.status === "proposed") ? `<p class="small">${icon("info")} Published evidence that would replace this assumption is <b>awaiting pharmacist review</b> (see Label rules).</p>` : ""}
     <div class="table-wrap"><table><tr><th>If the tolerance were</th>${sens.map((x) => `<th class="num">${x.above_limit_budget_hours} h</th>`).join("")}</tr>
       <tr><td>Budget left</td>${sens.map((x) => `<td class="num">${pct(x.remaining)}</td>`).join("")}</tr></table></div>
     <h3>Data quality</h3>
@@ -566,7 +612,18 @@ loaders.rescue = async () => {
   setTimeout(() => rescueMap.invalidateSize(), 60);
   const r = await api("/api/rescue");
   rescueLayer?.remove(); rescueLayer = L.layerGroup().addTo(rescueMap);
-  L.geoJSON(r.outages, { style: { color: "#b91c1c", weight: 1, fillOpacity: 0.1 } }).addTo(rescueLayer);
+  L.geoJSON(r.outages, {
+    style: (f) => /-live$/.test(f.properties.source || "") ? { color: "#d97706", weight: 1, dashArray: "4 3", fillOpacity: 0.12 } : { color: "#b91c1c", weight: 1, fillOpacity: 0.1 },
+    onEachFeature: (f, l) => l.bindPopup(`<b>${esc(f.properties.name)}</b><br>${f.properties.etr_known ? `Estimated restoration ${fmt(f.properties.est_restore_at)}` : "No restoration time yet"}`),
+  }).addTo(rescueLayer);
+  const lv = r.live || {};
+  const liveAreas = r.outages.features.filter((f) => /-live$/.test(f.properties.source || ""));
+  $("#rescue-live").innerHTML = lv.enabled
+    ? `<div class="row between"><span class="live-tag">Live from ${esc((lv.feeds || []).join(", "))}${lv.last_import ? ` · updated ${fmt(lv.last_import)}` : " · loading"}</span>
+       <button class="btn" id="live-refresh" style="min-height:30px;padding:3px 10px;font-size:13px">Refresh</button></div>
+       <p class="muted small">${liveAreas.length ? `${lv.customers?.toLocaleString() ?? "–"} customers without power across ${liveAreas.length} ZIP areas (dashed orange). Utilities report outages by ZIP, so a shaded ZIP means power <i>may</i> be out at a home there.` : "The utility reports no outages near here right now."}${lv.error ? ` Last refresh failed (${esc(lv.error)}).` : ""}</p>`
+    : `<p class="muted small">Live utility outage import is off (LIVE_OUTAGES=0). The demo storm still works.</p>`;
+  $("#live-refresh")?.addEventListener("click", (e) => busy(e.currentTarget, async () => { await post("/api/outages/refresh"); loaders.rescue(); }));
   const risk = new Map();
   r.people.forEach((p) => { const cur = risk.get(p.user_id); if (!cur || (p.hours_left ?? 1e9) < (cur.hours_left ?? 1e9)) risk.set(p.user_id, p); });
   r.users.forEach((u) => {
@@ -576,12 +633,14 @@ loaders.rescue = async () => {
       .bindPopup(`<b>${esc(u.name)}</b>${u.can_host ? " · can host" : ""}${p ? `<br>${esc(p.medicine)}: ${hrs(p.hours_left)} left` : ""}`).addTo(rescueLayer);
   });
   r.refuges.forEach((f) => L.marker([f.lat, f.lon], { title: f.name }).bindPopup(`<b>${esc(f.name)}</b><br>has power and a fridge`).addTo(rescueLayer));
-  const out = r.outages.features[0]?.properties;
+  const out = (r.outages.features.find((f) => !/-live$/.test(f.properties.source || "")) || r.outages.features[0])?.properties;
   const atRisk = r.people.filter((p) => p.at_risk);
   $("#plan-btn").hidden = !r.outages.features.length;
   if (!r.outages.features.length) $("#rescue-plan").innerHTML = "";
   $("#rescue-list").innerHTML = !r.people.length ? `<div class="banner ok">No power outage right now.</div><p class="muted small">During an outage, this page ranks neighbors by how long their medicines will last versus when power returns.</p>` : `
-    <div class="banner bad"><b>${esc(out?.name || "Power outage")}</b>: power back in about ${hrs(r.people[0].hours_to_restore)}, homes around ${temp(out?.indoor_temp_c)}. <b>${atRisk.length}</b> medicine${atRisk.length === 1 ? "" : "s"} will run out first.</div>
+    ${/-live$/.test(out?.source || "")
+      ? `<div class="banner warn"><b>${new Set(r.people.map((p) => p.user_id)).size} LIFELOG ${new Set(r.people.map((p) => p.user_id)).size === 1 ? "home is" : "homes are"} in ZIP codes where the utility reports outages.</b> If their power is out, homes drift toward ${temp(out?.indoor_temp_c)}. <b>${atRisk.length}</b> medicine${atRisk.length === 1 ? "" : "s"} would run out before a typical 4-hour restoration.</div>`
+      : `<div class="banner bad"><b>${esc(out?.name || "Power outage")}</b>: power back in about ${hrs(r.people[0].hours_to_restore)}, homes around ${temp(out?.indoor_temp_c)}. <b>${atRisk.length}</b> medicine${atRisk.length === 1 ? "" : "s"} will run out first.</div>`}
     <div class="table-wrap"><table><tr><th>Person</th><th>Medicine</th><th class="num">Lasts</th><th>Go to</th></tr>
     ${r.people.map((p) => `<tr class="${p.at_risk ? "risk" : ""}"><td>${esc(p.name)}</td><td>${esc(p.medicine)}<div class="muted small">${pct(p.remaining)} budget</div></td>
       <td class="num">${hrs(p.hours_left)}<div class="muted small">${esc(p.warming_model || "")}</div></td><td>${p.refuges[0] ? `${esc(p.refuges[0].name)}<div class="muted small">${p.refuges[0].miles} mi</div>` : "–"}</td></tr>`).join("")}</table></div>`;
@@ -913,6 +972,52 @@ function connectLive() {
   es.onerror = () => { $("#live").textContent = "Reconnecting…"; $("#live").classList.remove("on"); };
 }
 
+// ------------------------------------------------------------------ pharmacist review
+loaders.review = async () => {
+  const list = await api("/api/review");
+  if (me?.credentials && !$("#rv-cred").value) $("#rv-cred").value = me.credentials;
+  $("#review-list").innerHTML = list.map((p) => `
+    <div class="card review-card" data-pid="${p.id}">
+      <div class="row between"><h2>${esc(p.name)}</h2>${p.review ? `<span class="pill ${p.review.status === "approved" ? "USE" : "USE_SOON"}">${p.review.status === "approved" ? "Approved" : "Changes requested"} · ${esc(p.review.reviewer)}</span>` : `<span class="pill">Not reviewed</span>`}</div>
+      ${p.source_url ? `<p class="source small">${icon("file")}<a href="${esc(p.source_url)}" target="_blank" rel="noopener">${esc(p.source_label || "Label source")}</a></p>` : ""}
+      <p class="small"><b>Storage rule:</b> ${p.model.target_min_c}–${p.model.target_max_c}°C. ${(p.model.bands || []).map((b) => `${esc(b.label)} ${b.min_c}–${b.max_c}°C: ${Math.round(b.budget_hours / 24)} days`).join("; ")}.
+        Above ${Math.max(p.model.target_max_c, ...(p.model.bands || []).map((b) => b.max_c))}°C: ${p.model.above_limit_budget_hours.toLocaleString()} h${p.model.above_limit_is_assumption ? " <b>(LIFELOG assumption)</b>" : ""}. ${p.model.freeze_discard ? "Discard if frozen." : ""} ${p.model.in_use_days ? `In use: ${Math.round(p.model.in_use_days)} days.` : ""}</p>
+      <p class="small"><b>Care checklist patients see:</b></p>
+      <ul class="small">${p.checklist.map((c) => `<li>${esc(c)}</li>`).join("") || "<li class='muted'>No patient has this medicine yet.</li>"}</ul>
+      ${p.evidence.map((e) => `<div class="evidence"><span class="st ${e.status}">${e.status === "proposed" ? "New evidence to review" : e.status === "approved" ? `Approved by ${esc(e.reviewed_by)}` : `Rejected by ${esc(e.reviewed_by)}`}</span>
+        <p class="small">${esc(e.finding)}</p><p class="muted small">${esc(e.derivation)}</p>
+        <p class="muted small">${e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.citation)}</a>` : esc(e.citation)}</p>
+        <p class="small">Heat tolerance just above the label limit: <b>${e.current_value} h → ${e.proposed_value.toLocaleString()} h</b></p>
+        ${e.status === "proposed" ? `<div class="row"><button class="btn primary" data-ev="${e.id}" data-approve="1">Approve and recalculate</button><button class="btn" data-ev="${e.id}" data-approve="0">Reject</button></div>` : ""}</div>`).join("")}
+      <label class="field small">Note<textarea rows="2" class="rv-note" placeholder="Required when requesting changes: what should the wording say?">${esc(p.review?.note || "")}</textarea></label>
+      <div class="row"><button class="btn primary" data-rv="approved">Approve rules and wording</button><button class="btn" data-rv="changes_requested">Request changes</button></div>
+    </div>`).join("");
+  $$("[data-rv]").forEach((b) => b.onclick = (e) => busy(e.currentTarget, async () => {
+    const card = b.closest("[data-pid]");
+    await post(`/api/review/${card.dataset.pid}`, { status: b.dataset.rv, credentials: $("#rv-cred").value, note: $(".rv-note", card).value });
+    toast(b.dataset.rv === "approved" ? "Approved: patients now see your review" : "Changes requested"); loaders.review();
+  }));
+  $$("[data-ev]").forEach((b) => b.onclick = (e) => busy(e.currentTarget, async () => {
+    await post(`/api/evidence/${b.dataset.ev}`, { approve: b.dataset.approve === "1" });
+    toast(b.dataset.approve === "1" ? "Approved. Recalculating every patient's budget for this medicine in Tiger Data…" : "Evidence rejected");
+    loaders.review();
+  }));
+};
+
+// ------------------------------------------------------------------ account
+let me = null;
+async function signOut() { await post("/api/auth/logout"); location.href = "/login"; }
+async function loadMe() {
+  me = await api("/api/me");
+  document.body.classList.toggle("pharmacist", me.role === "pharmacist");
+  $("#account").innerHTML = `<b>${esc(me.name)}${me.role === "pharmacist" ? `<span class="role-tag">Pharmacist</span>` : ""}</b>
+    <span class="muted">${esc(me.email || "")}</span><br><button class="btn" id="signout">Sign out</button>`;
+  $("#account-m").textContent = `Signed in as ${me.name}${me.email ? ` (${me.email})` : ""}`;
+  $("#signout").onclick = signOut;
+  $("#signout-m").onclick = signOut;
+  return me;
+}
+
 // ------------------------------------------------------------------ deep links: #view=rescue, #item=3&open=accuracy
 async function applyHash() {
   const h = new URLSearchParams(location.hash.slice(1));
@@ -920,7 +1025,9 @@ async function applyHash() {
     show("meds");
     await openItem(+h.get("item"));
     for (const k of (h.get("open") || "").split(",").filter(Boolean)) {
-      const d = $(`#item-detail details[data-k="${k}"]`); if (d) d.open = true;
+      const d = $(`#item-detail details[data-k="${k}"]`); if (!d) continue;
+      d.open = true;
+      ({ doses: loadDoses, ml: loadMl, history: loadHistory, recalls: loadRecalls, accuracy: loadAccuracy })[k]?.(currentItem);
     }
   } else if (h.get("view")) show(h.get("view"));
 }
@@ -930,5 +1037,6 @@ addEventListener("hashchange", applyHash);
 health();
 refreshBadge();
 if (!location.search.includes("nolive")) connectLive(); else $("#live").hidden = true;
+loadMe().then((u) => (u.role === "pharmacist" && !location.hash ? show("review") : null)).catch(() => {});
 loadItems().then(applyHash).catch((e) => { $("#item-list").innerHTML = `<div class="card"><p>${esc(e.message)}</p><p class="muted">Check .env and run scripts/setup_db.py.</p></div>`; });
 addEventListener("resize", () => setDetailOpen($("#view-meds").classList.contains("detail-open")));

@@ -1,6 +1,7 @@
 import atexit
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 import psycopg
 
@@ -23,11 +24,70 @@ def pool() -> ConnectionPool:
     return _pool
 
 
+# ------------------------------------------------------------------ who is asking (row-level security)
+_user: ContextVar[int | None] = ContextVar("lifelog_user", default=None)
+_system: ContextVar[bool] = ContextVar("lifelog_system", default=False)
+
+
+def set_user(user_id: int | None):
+    return _user.set(user_id)
+
+
+def reset_user(token) -> None:
+    _user.reset(token)
+
+
+@contextmanager
+def system():
+    """Run as the table owner: background jobs and the explicitly shared community features."""
+    tok = _system.set(True)
+    try:
+        yield
+    finally:
+        _system.reset(tok)
+
+
+def current_user() -> int | None:
+    return _user.get()
+
+
+def me() -> int:
+    """The signed-in user; background jobs and tests fall back to the demo patient."""
+    uid = _user.get()
+    if uid:
+        return uid
+    with system():
+        row = one("SELECT id FROM users WHERE is_me ORDER BY id LIMIT 1")
+    return row["id"] if row else 0
+
+
+_rls: bool | None = None
+
+
+def rls_available() -> bool:
+    """Can this database user switch to the restricted role? (Hosted databases may not allow creating it.)"""
+    global _rls
+    if _rls is None:
+        try:
+            with pool().connection() as c:
+                c.execute("SET LOCAL ROLE lifelog_app")
+                c.rollback()
+            _rls = True
+        except Exception:  # noqa: BLE001
+            _rls = False
+    return _rls
+
+
 @contextmanager
 def conn(autocommit: bool = False):
     with pool().connection() as c:
+        uid = _user.get()
         if autocommit:
             c.autocommit = True
+        elif uid and not _system.get() and rls_available():
+            # for this transaction only: become the restricted role and say who we are; policies do the rest
+            c.execute("SELECT set_config('role', 'lifelog_app', true), set_config('lifelog.user_id', %s, true)",
+                      (str(uid),))
         yield c
         if autocommit:
             c.autocommit = False

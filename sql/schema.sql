@@ -104,6 +104,70 @@ CREATE TABLE IF NOT EXISTS ml_models (
     trained_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Accounts (password hashes only: PBKDF2-SHA256), sessions, pharmacist roles
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'patient';   -- patient | pharmacist
+ALTER TABLE users ADD COLUMN IF NOT EXISTS credentials TEXT;                        -- e.g. "PharmD, MI license #"
+CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users (lower(email)) WHERE email IS NOT NULL;
+-- webhooks belong to an account: each receives only its owner's alerts (older rows go to the demo patient)
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS user_id INT REFERENCES users(id) ON DELETE CASCADE;
+UPDATE webhooks SET user_id = (SELECT id FROM users WHERE is_me ORDER BY id LIMIT 1) WHERE user_id IS NULL;
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+
+-- Pharmacist sign-off of a product's rules and care-checklist wording
+CREATE TABLE IF NOT EXISTS reviews (
+    id          SERIAL PRIMARY KEY,
+    product_id  INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    status      TEXT NOT NULL,                      -- approved | changes_requested
+    reviewer_id INT REFERENCES users(id) ON DELETE SET NULL,
+    reviewer    TEXT NOT NULL,
+    credentials TEXT,
+    note        TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Published evidence that can replace a LIFELOG assumption once a pharmacist approves it
+CREATE TABLE IF NOT EXISTS evidence (
+    id             SERIAL PRIMARY KEY,
+    product_id     INT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    field          TEXT NOT NULL DEFAULT 'above_limit_budget_hours',
+    current_value  DOUBLE PRECISION,
+    proposed_value DOUBLE PRECISION NOT NULL,
+    citation       TEXT NOT NULL,
+    url            TEXT,
+    finding        TEXT NOT NULL,
+    derivation     TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'proposed',   -- proposed | approved | rejected
+    reviewed_by    TEXT,
+    reviewed_at    TIMESTAMPTZ
+);
+
+-- Doses taken, with the medicine's state at that moment
+CREATE TABLE IF NOT EXISTS doses (
+    id             SERIAL PRIMARY KEY,
+    item_id        INT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    taken_at       TIMESTAMPTZ NOT NULL,
+    note           TEXT,
+    budget_at_dose DOUBLE PRECISION,
+    status_at_dose TEXT,
+    temp_at_dose   DOUBLE PRECISION,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS doses_item_taken ON doses (item_id, taken_at DESC);
+
+-- Live utility outages (DTE via Kubra StormCenter) share the outages table
+ALTER TABLE outages ADD COLUMN IF NOT EXISTS external_id   TEXT;
+ALTER TABLE outages ADD COLUMN IF NOT EXISTS customers_out INT;
+ALTER TABLE outages ADD COLUMN IF NOT EXISTS etr_known     BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE outages ADD COLUMN IF NOT EXISTS updated_at    TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS outages_external ON outages (external_id) WHERE external_id IS NOT NULL;
+
 -- ---------------------------------------------------------------- telemetry
 CREATE TABLE IF NOT EXISTS readings (
     ts          TIMESTAMPTZ NOT NULL,

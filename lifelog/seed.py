@@ -126,6 +126,34 @@ SHORT = {"insulin": "Lantus pen", "novolog": "NovoLog FlexPen", "tresiba": "Tres
 
 HISTORY_DAYS = 14
 
+# Published heat-tolerance evidence that would replace LIFELOG's 8-hour assumption. Proposed only: nothing changes
+# until a pharmacist approves it in the Review view. Derivations use the same doubling-per-10°C rule as the engine.
+EVIDENCE = {
+    "epi": {
+        "proposed": 10752.0,
+        "citation": "Grant TA et al., Am J Emerg Med 1994;12(3):319-22 (PMID 8179739); Parish HG et al., "
+                    "Ann Allergy Asthma Immunol 2016;117(1):79-87 (PMID 27221065)",
+        "url": "https://pubmed.ncbi.nlm.nih.gov/8179739/",
+        "finding": "Epinephrine 1:1,000 (the auto-injector concentration) showed no statistically significant loss after "
+                   "12 weeks of cycled heating to 70°C for 8 hours a day; a 2016 systematic review found heat degradation "
+                   "only with prolonged exposure and none with freezing.",
+        "derivation": "12 weeks × 8 h/day = 672 h at 70°C with no significant loss. At 70°C the engine burns 2^((70−30)/10) = 16× "
+                      "the rate just above 30°C, so 672 h at 70°C is equivalent to 672 × 16 = 10,752 h just above the label limit. "
+                      "Treated as a lower bound (no loss was seen, so the true tolerance is at least this).",
+    },
+    "insulin": {
+        "proposed": 303.0,
+        "citation": "Vimalavathini R, Gitanjali B, Indian J Pharmacol 2009, as summarised in a 2023 review of insulin "
+                    "storage at high temperatures (PMC10627263)",
+        "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC10627263/",
+        "finding": "Short-acting human insulin lost 18% of potency after 28 days at 37°C (14% at 32°C). The review concludes "
+                   "unopened insulin can be kept at up to 37°C for at most two months without clinically relevant loss.",
+        "derivation": "18% loss in 672 h at 37°C. LIFELOG treats a 5% potency loss as the end of the budget: 672 × 5/18 = 187 h "
+                      "at 37°C, which is 187 × 2^(7/10) = 303 h just above 30°C. Human-insulin data applied to insulin glargine: "
+                      "the pharmacist must judge whether that extrapolation is acceptable.",
+    },
+}
+
 NAMES = ["Margaret", "Ahmed", "Lina", "Jamal", "Rosa", "Hassan", "Denise", "Omar", "Grace", "Tyrone",
          "Fatima", "Walter", "Mei", "Carlos"]
 
@@ -224,6 +252,17 @@ def run(with_weather: bool = True) -> dict:
             uid.append(c.execute("""INSERT INTO users (name, is_me, can_host, lat, lon, geom)
                                     VALUES (%s,%s,%s,%s,%s, ST_SetSRID(ST_MakePoint(%s,%s),4326)) RETURNING id""",
                                  (*u, u[4], u[3])).fetchone()["id"])
+        # accounts: "You" is the demo patient; a demo pharmacist reviews rules and evidence (no password: demo button)
+        c.execute("UPDATE users SET email = 'demo.patient@lifelog.example' WHERE id = %s", (uid[0],))
+        c.execute("""INSERT INTO users (name, is_me, can_host, lat, lon, geom, email, role, credentials)
+                     VALUES ('Demo Pharmacist', FALSE, FALSE, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                             'demo.pharmacist@lifelog.example', 'pharmacist', 'PharmD (demo account)')""",
+                  (REFUGES[0][2], REFUGES[0][3], REFUGES[0][3], REFUGES[0][2]))
+        for key, ev in EVIDENCE.items():
+            c.execute("""INSERT INTO evidence (product_id, field, current_value, proposed_value, citation, url, finding, derivation)
+                         VALUES (%s, 'above_limit_budget_hours', %s, %s, %s, %s, %s, %s)""",
+                      (pid[key], PRODUCTS[key]["above_limit_budget_hours"], ev["proposed"], ev["citation"], ev["url"],
+                       ev["finding"], ev["derivation"]))
         for r in REFUGES:
             c.execute("""INSERT INTO refuges (name, kind, lat, lon, geom)
                          VALUES (%s,%s,%s,%s, ST_SetSRID(ST_MakePoint(%s,%s),4326))""", (*r, r[3], r[2]))
@@ -291,8 +330,25 @@ def run(with_weather: bool = True) -> dict:
         db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
         db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_1d', NULL, time_bucket('1 day', now()))")
     compressed = compress_history()
+    doses = seed_doses(iid[3][0], iid[0][0], t_end)
     check_alerts()
-    return {"readings": n, "items": len(iid), "users": len(uid), "compressed_chunks": compressed, **porch}
+    return {"readings": n, "doses": doses, "items": len(iid), "users": len(uid), "compressed_chunks": compressed, **porch}
+
+
+def seed_doses(victoza: int, mounjaro: int, t_end: datetime) -> int:
+    """Dose history so 'was last Tuesday's dose still good?' has an answer: Victoza daily at 8 am since it was
+    opened, Mounjaro weekly. Each dose records the status computed from Tiger Data at that moment."""
+    from . import services
+    detroit = timezone(timedelta(hours=-4))
+    n = 0
+    for back in range(HISTORY_DAYS - 1, 0, -1):
+        day = (t_end - timedelta(days=back)).astimezone(detroit).replace(hour=8, minute=rng.randint(0, 40), second=0, microsecond=0)
+        services.log_dose(victoza, day, None)
+        n += 1
+        if back % 7 == 2:
+            services.log_dose(mounjaro, day.replace(hour=19), "Weekly dose")
+            n += 1
+    return n
 
 
 def seed_porch(with_weather: bool) -> dict:
@@ -463,6 +519,7 @@ def apply_schema() -> None:
         c.execute((sql / "functions.sql").read_text(encoding="utf-8"))
         c.execute((sql / "aggregates.sql").read_text(encoding="utf-8"))
         c.execute((sql / "realtime.sql").read_text(encoding="utf-8"))
+        c.execute((sql / "security.sql").read_text(encoding="utf-8"))
         if stale:
             db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
     add_policy()

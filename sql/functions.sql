@@ -208,10 +208,20 @@ LANGUAGE sql STABLE AS $$
            || to_char(bucket AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '. Exposure is unknown.'
     FROM last WHERE bucket < now() - INTERVAL '30 minutes'
     UNION ALL
+    -- live utility areas are whole ZIP codes: say "may be affected", not "is out"
     SELECT l.id, 'outage', 'warning',
-           l.nickname || ' is inside ' || o.name || '. Power expected back around '
-           || to_char(o.est_restore_at AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '.'
-    FROM last l JOIN outages o ON o.active AND ST_Contains(o.area, l.geom)
+           CASE WHEN o.source LIKE '%-live' THEN
+               l.nickname || ': ' || upper(split_part(o.source, '-', 1)) || ' reports ' || coalesce(o.customers_out, 0)
+               || ' customers without power in your ZIP code. If your power is out, '
+               || CASE WHEN (l.model->>'target_max_c')::float8 <= 10 THEN 'keep the fridge closed. '
+                       ELSE 'keep it in the coolest room. ' END
+               || CASE WHEN o.etr_known THEN 'Estimated restoration '
+                       || to_char(o.est_restore_at AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '.'
+                       ELSE 'No restoration time yet.' END
+           ELSE l.nickname || ' is inside ' || o.name || '. Power expected back around '
+                || to_char(o.est_restore_at AT TIME ZONE 'America/Detroit', 'FMHH12:MI AM') || '.' END
+    FROM last l JOIN LATERAL (SELECT * FROM outages o WHERE o.active AND ST_Contains(o.area, l.geom)
+                              ORDER BY o.source LIKE '%-live', o.id LIMIT 1) o ON TRUE
     UNION ALL
     SELECT id, 'expired', 'critical',
            nickname || ' passed its expiration date (' || to_char(expires_on, 'FMMon FMDD, YYYY') || ').'

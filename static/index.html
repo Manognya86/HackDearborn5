@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -44,6 +44,7 @@
   <aside class="sidebar" aria-label="Main navigation">
     <div class="brand"><img src="/static/icon.svg" alt="" width="28" height="28"><span>LIFELOG</span></div>
     <nav id="nav">
+      <button data-view="review" class="pharm-only"><svg><use href="#i-check"/></svg><span>Pharmacist review</span></button>
       <button data-view="meds" class="active"><svg><use href="#i-pill"/></svg><span>My medicines</span></button>
       <button data-view="alerts"><svg><use href="#i-bell"/></svg><span>Alerts</span><b id="alert-count" class="badge" hidden></b></button>
       <button data-view="ask"><svg><use href="#i-chat"/></svg><span>Ask LIFELOG</span></button>
@@ -58,6 +59,7 @@
       <button data-view="dev"><svg><use href="#i-file"/></svg><span>For developers</span></button>
       <button data-view="demo"><svg><use href="#i-sliders"/></svg><span>Demo controls</span></button>
     </nav>
+    <div id="account" class="account"></div>
     <div id="health" class="health"></div>
   </aside>
 
@@ -122,6 +124,7 @@
         <div class="two-col">
           <div id="rescue-map" class="map"></div>
           <div class="card">
+            <div id="rescue-live"></div>
             <div class="row between"><h2>Who needs help first</h2><button id="plan-btn" class="btn ai"><svg><use href="#i-spark"/></svg>Dispatch plan</button></div>
             <div id="rescue-list"></div>
             <div id="rescue-plan"></div>
@@ -196,6 +199,18 @@
         </div>
       </section>
 
+      <!-- ======================================================= pharmacist review -->
+      <section id="view-review" class="view">
+        <div class="card narrow">
+          <h2>Review medicine rules and wording</h2>
+          <p class="muted">Patients see a "pharmacist-reviewed" mark only after a pharmacist approves a medicine's storage rules and the
+            care-checklist wording below. New heat-tolerance evidence changes every patient's life budget for that medicine only after
+            you approve it; LIFELOG then recalculates the whole history in Tiger Data.</p>
+          <label class="field">Your credentials (shown to patients)<input type="text" id="rv-cred" placeholder="e.g. PharmD, Michigan license 53-02xxxxx"></label>
+        </div>
+        <div id="review-list" style="margin-top:14px"></div>
+      </section>
+
       <!-- ======================================================= developers -->
       <section id="view-dev" class="view">
         <div class="card narrow">
@@ -260,7 +275,10 @@
       <button data-view="tiger"><svg><use href="#i-db"/></svg>Under the hood</button>
       <button data-view="dev"><svg><use href="#i-file"/></svg>For developers</button>
       <button data-view="demo"><svg><use href="#i-sliders"/></svg>Demo controls</button>
+      <button data-view="review" class="pharm-only"><svg><use href="#i-check"/></svg>Pharmacist review</button>
+      <button id="signout-m"><svg><use href="#i-back"/></svg>Sign out</button>
     </div>
+    <p id="account-m" class="muted small" style="text-align:center"></p>
   </div>
 </div>
 
@@ -299,6 +317,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="/static/app.js?v=14"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>

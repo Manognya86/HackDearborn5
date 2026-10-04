@@ -13,7 +13,7 @@ def _clean(x):
 
 
 def _me() -> int:
-    return db.one("SELECT id FROM users WHERE is_me")["id"]
+    return db.me()
 
 
 SEVERITY = {"DO_NOT_USE": 0, "ASK_PHARMACIST": 1, "CHECK": 2, "USE_SOON": 3, "USE": 4}
@@ -115,8 +115,9 @@ def simulate_exposure(item_id: int, temp_c: float, hours: float) -> dict:
 def get_outage_situation() -> dict:
     """Active power outages affecting the user: their medicines' hours of life left versus hours until
     power is restored, and the nearest refuges that still have power."""
-    r = services.rescue()
-    me = [p for p in r["people"] if db.one("SELECT is_me FROM users WHERE id = %s", (p["user_id"],))["is_me"]]
+    with db.system():
+        r = services.rescue()
+    me = [p for p in r["people"] if p["user_id"] == db.me()]
     return _clean({"active_outages": [f["properties"] for f in r["outages"]["features"]], "my_medicines": me,
                    "neighbors_at_risk": sum(1 for p in r["people"] if p["at_risk"])})
 
@@ -128,8 +129,21 @@ def get_alerts() -> list[dict]:
                    for a in services.alerts(mine_only=True)])
 
 
+def get_doses(item_id: int) -> list[dict]:
+    """Doses the user logged for one medicine, newest first: when it was taken, the medicine's status and life
+    budget left at that moment, and whether today's data (e.g. a late sensor upload) changes that answer.
+    Use this for questions like 'was the dose I took last Tuesday still good?'."""
+    return _clean([{"taken_at": d["taken_at"], "status_when_taken": engine.STATUS_TEXT.get(d["status_at_dose"], d["status_at_dose"]),
+                    "budget_left_percent_when_taken": _pct(d["budget_at_dose"]),
+                    "temp_c_when_taken": _r(d["temp_at_dose"]),
+                    "status_rechecked_now": engine.STATUS_TEXT.get(d["status_now"], d["status_now"]),
+                    "budget_left_percent_rechecked_now": _pct(d["budget_now"]),
+                    "changed_since_logged": d["changed"], "note": d["note"]}
+                   for d in services.doses(item_id, 30)])
+
+
 TOOLS = [list_my_medicines, get_medicine_details, get_exposure_calendar, simulate_exposure, get_outage_situation,
-         get_alerts]
+         get_alerts, get_doses]
 
 
 def _system(lang: str | None) -> str:
