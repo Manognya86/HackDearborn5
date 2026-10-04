@@ -589,7 +589,8 @@ def create_receipt(d: dict) -> dict:
     m = item["model"]
     payload = {"product": item["product_name"], "nickname": item["nickname"], "lot": item.get("lot"),
                "since": item["started_at"].isoformat(), "remaining": round(1 - snap["used"], 4), **snap,
-               "label": {"target_quote": m.get("target_quote"), "bands": [b["quote"] for b in m.get("bands", [])]},
+               "label": {"target_quote": m.get("target_quote"),
+                         "bands": [q for q in dict.fromkeys(b["quote"] for b in m.get("bands", [])) if q != m.get("target_quote")]},
                "source_url": item.get("source_url")}
     db.execute("""INSERT INTO receipts (code, item_id, as_of, payload, digest) VALUES (%s,%s,%s,%s,%s)
                   ON CONFLICT (code) DO NOTHING""", (code, item["id"], as_of, json.dumps(payload, default=str), digest))
@@ -764,7 +765,9 @@ def precautions(item: dict, state: dict, gaps: list[dict], whatif: list[dict]) -
                     else f"Keep at {m['target_min_c']:.0f}–{m['target_max_c']:.0f}°C."})
     if m.get("freeze_discard"):
         out.append({"level": "info", "text": "Never freeze it. If it has been frozen, don't use it."})
+    import re as _re0
     for v in m.get("visual_checks", []):
+        v = _re0.sub(r"^(before (using|use|each use),?\s*)", "", v.strip(), flags=_re0.I).rstrip(".")
         out.append({"level": "info", "text": f"Before each use: {v[0].lower() + v[1:]}."})
     import re as _re
     for rule in m.get("discard_rules", []):
