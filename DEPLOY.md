@@ -67,7 +67,17 @@ need `--yes` after you check the printed storage estimate. Seed from your machin
 
 ## 4. Docker (Docker Desktop)
 
-The image contains the code only; secrets are passed at run time.
+The image contains the code only; secrets are passed at run time from `.env`.
+
+With Compose (`compose.yaml`), from the repo folder:
+```powershell
+docker compose up -d --build        # build + start (also the command to rebuild after code changes)
+docker compose logs -f              # follow logs
+docker compose down                 # stop and remove
+```
+If a container named `lifelog` already exists from an earlier `docker run`, remove it first: `docker rm -f lifelog`.
+
+Or with plain Docker:
 ```powershell
 docker build -t lifelog .
 docker run -d --name lifelog --restart unless-stopped --env-file .env -e GEMINI_TIMEOUT_S=60 -p 8000:8000 lifelog
