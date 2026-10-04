@@ -60,11 +60,11 @@ BEGIN
     END LOOP;
 END $$;
 
--- contacts, messages sent, caregiver links and power reports belong to one account
+-- caregiver links and power reports belong to one account
 DO $$
 DECLARE t TEXT;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['alert_contacts', 'notifications', 'power_reports'] LOOP
+    FOREACH t IN ARRAY ARRAY['power_reports'] LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('DROP POLICY IF EXISTS own_rows ON %I', t);
         EXECUTE format('CREATE POLICY own_rows ON %I USING (user_id = lifelog_uid()) WITH CHECK (user_id = lifelog_uid())', t);

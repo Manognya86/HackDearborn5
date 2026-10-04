@@ -1036,8 +1036,6 @@ def export_account(user_id: int) -> bytes:
             "alerts": db.query("SELECT * FROM alerts WHERE item_id = ANY(%s) ORDER BY created_at", (ids,)),
             "receipts": db.query("SELECT code, item_id, as_of, payload, digest, created_at FROM receipts WHERE item_id = ANY(%s)", (ids,)),
             "share_links": db.query("SELECT token, label, revoked, created_at FROM shares WHERE user_id = %s", (user_id,)),
-            "alert_contacts": db.query("SELECT * FROM alert_contacts WHERE user_id = %s", (user_id,)),
-            "messages_sent": db.query("SELECT * FROM notifications WHERE user_id = %s ORDER BY id", (user_id,)),
             "people_i_care_for": db.query("SELECT label, share_token, created_at FROM care_links WHERE caregiver_id = %s", (user_id,)),
             "power_reports": db.query("SELECT * FROM power_reports WHERE user_id = %s ORDER BY id", (user_id,)),
             "devices": db.query("SELECT label, item_id, created_at, last_seen, readings, revoked FROM devices WHERE item_id = ANY(%s)", (ids,)),

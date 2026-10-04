@@ -417,18 +417,6 @@ def reminders_():
     return f"{len(r)} coming up" + (f" (first: {r[0]['nickname'][:24]}, {r[0]['days_left']} days)" if r else "") + "; instant refill draft"
 
 
-def text_alerts():
-    c = ok(cx.post("/api/contacts", json={"name": "Validation", "phone": "(313) 555-0142", "sms": True, "voice": True}))
-    must(c["phone"] == "+13135550142", f"phone not normalized: {c['phone']}")
-    must(cx.post("/api/contacts", json={"name": "x", "phone": "12"}).status_code == 422, "bad phone accepted")
-    sent = ok(cx.post(f"/api/contacts/{c['id']}/test"))
-    must({x["channel"] for x in sent} == {"sms", "voice"}, f"test sent {sent}")
-    lst = ok(cx.get("/api/contacts"))
-    must(any(m["kind"] == "test" for m in lst["messages"]), "test message not logged")
-    ok(cx.delete(f"/api/contacts/{c['id']}"))
-    return f"text + call test {'sent' if lst['twilio'] else 'recorded as dry run (no Twilio configured)'}; contact removed"
-
-
 def caregivers():
     cu = signed_in("customer")
     people = ok(cu.get("/api/caring"))
@@ -466,7 +454,6 @@ def account_controls():
 
 
 check("reminders + instant refill letter", reminders_)
-check("text and phone-call alerts (contacts, test, log)", text_alerts)
 check("caregiver view: people I care for", caregivers)
 check("my power is out / power is back", power_report)
 check("account: password, language, export, delete", account_controls)

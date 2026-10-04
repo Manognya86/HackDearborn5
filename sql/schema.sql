@@ -168,34 +168,9 @@ ALTER TABLE outages ADD COLUMN IF NOT EXISTS etr_known     BOOLEAN NOT NULL DEFA
 ALTER TABLE outages ADD COLUMN IF NOT EXISTS updated_at    TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS outages_external ON outages (external_id) WHERE external_id IS NOT NULL;
 
--- Text-message and phone-call alerts: the people to reach (the patient, a caregiver) and every message sent
-CREATE TABLE IF NOT EXISTS alert_contacts (
-    id         SERIAL PRIMARY KEY,
-    user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name       TEXT NOT NULL,
-    phone      TEXT NOT NULL,                      -- E.164, e.g. +13135550123
-    sms        BOOLEAN NOT NULL DEFAULT TRUE,
-    voice      BOOLEAN NOT NULL DEFAULT FALSE,     -- phone call that reads the alert aloud
-    reminders  BOOLEAN NOT NULL DEFAULT TRUE,      -- refill / use-by reminders too
-    active     BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS notifications (
-    id          SERIAL PRIMARY KEY,
-    user_id     INT REFERENCES users(id) ON DELETE CASCADE,
-    contact_id  INT REFERENCES alert_contacts(id) ON DELETE SET NULL,
-    item_id     INT REFERENCES items(id) ON DELETE CASCADE,
-    alert_id    INT,
-    kind        TEXT NOT NULL,                     -- alert | reminder-7 | reminder-3 | reminder-1 | test
-    channel     TEXT NOT NULL,                     -- sms | voice
-    to_phone    TEXT NOT NULL,
-    body        TEXT NOT NULL,
-    status      TEXT NOT NULL,                     -- sent | dry_run | failed
-    provider_id TEXT,
-    error       TEXT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS notifications_dedupe ON notifications (contact_id, kind, item_id, alert_id);
+-- Text and phone-call alerts were removed: drop their tables from databases that still have them
+DROP TABLE IF EXISTS notifications;
+DROP TABLE IF EXISTS alert_contacts;
 
 -- A caregiver keeps the share links of the people they look after, to see them all in one place
 CREATE TABLE IF NOT EXISTS care_links (

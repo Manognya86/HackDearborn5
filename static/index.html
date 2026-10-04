@@ -220,21 +220,6 @@
       <!-- ======================================================= settings -->
       <section id="view-settings" class="view">
         <div class="card narrow">
-          <h2 data-i18n="settings.alerts">Text and phone-call alerts</h2>
-          <p class="muted small">Critical alerts (frozen, too hot, budget used up, power outage, expired) and refill reminders 7, 3 and 1 days before a use-by date, by text or phone call: for people who don't watch an app.</p>
-          <div id="twilio-note"></div>
-          <form id="contact-form" class="dates-form">
-            <label class="small"><span data-i18n="settings.name">Name</span><input type="text" id="c-name" placeholder="Me, or Mom"></label>
-            <label class="small"><span data-i18n="settings.phone">Phone number</span><input type="text" id="c-phone" placeholder="(313) 555-0123" required></label>
-            <label class="small toggle"><input type="checkbox" id="c-sms" checked> <span data-i18n="settings.sms">Text messages</span></label>
-            <label class="small toggle"><input type="checkbox" id="c-voice"> <span data-i18n="settings.voice">Phone calls</span></label>
-            <label class="small toggle"><input type="checkbox" id="c-rem" checked> <span data-i18n="settings.reminders">Refill reminders</span></label>
-            <button class="btn primary" type="submit" data-i18n="settings.add_contact">Add contact</button>
-          </form>
-          <div id="contact-list"></div>
-          <details class="fold"><summary>Messages sent <span class="muted">most recent first</span></summary><div id="message-list" class="small"></div></details>
-        </div>
-        <div class="card narrow" style="margin-top:14px">
           <h2 data-i18n="settings.language">Language</h2>
           <select id="lang2" aria-label="Language"><option value="en">English</option><option value="ar">العربية</option><option value="es">Español</option><option value="bn">বাংলা</option></select>
           <p class="muted small" id="lang-note"></p>
@@ -249,7 +234,7 @@
         </div>
         <div class="card narrow" style="margin-top:14px">
           <h2 data-i18n="settings.data">Your data</h2>
-          <p class="muted small">A ZIP with everything LIFELOG holds about you: medicines, every temperature reading, doses, alerts, receipts, contacts and messages.</p>
+          <p class="muted small">A ZIP with everything LIFELOG holds about you: medicines, every temperature reading, doses, alerts and receipts.</p>
           <a class="btn" href="/api/account/export" data-i18n="settings.download">Download my data</a>
           <h3 data-i18n="settings.delete">Delete my account</h3>
           <p class="muted small">Deletes your account, your medicines and every reading, permanently. Demo accounts can't be deleted.</p>

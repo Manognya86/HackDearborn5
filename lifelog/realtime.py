@@ -72,11 +72,6 @@ def _webhooks(ev: dict) -> None:
         services.deliver_webhooks(ev)
     except Exception:
         pass
-    try:
-        from . import notify    # text / phone-call alerts for critical alerts
-        notify.on_alert(ev)
-    except Exception:
-        pass
 
 
 def status() -> dict:

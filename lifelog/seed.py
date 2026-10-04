@@ -505,16 +505,12 @@ def ensure_accounts(t_end: datetime | None = None) -> dict:
 
 
 def _demo_links(owner_email: str, customer_email: str) -> None:
-    """The owner gets a text-alert contact on a fictional 555-01xx number (messages are recorded as a dry run
-    without Twilio), and the customer looks after the owner through a share link: the caregiver view."""
+    """The customer looks after the owner through a share link: the caregiver view."""
     import secrets
     owner = db.one("SELECT id FROM users WHERE lower(email) = %s", (owner_email,))
     cust = db.one("SELECT id FROM users WHERE lower(email) = %s", (customer_email,))
     if not owner or not cust:
         return
-    if not db.one("SELECT 1 AS x FROM alert_contacts WHERE user_id = %s", (owner["id"],)):
-        db.execute("""INSERT INTO alert_contacts (user_id, name, phone, sms, voice, reminders)
-                      VALUES (%s, 'Manu (demo phone)', '+13135550100', TRUE, TRUE, TRUE)""", (owner["id"],))
     if not db.one("SELECT 1 AS x FROM care_links WHERE caregiver_id = %s", (cust["id"],)):
         token = secrets.token_urlsafe(16)
         db.execute("INSERT INTO shares (token, user_id, label) VALUES (%s, %s, 'For Alex (caregiver demo)')", (token, owner["id"]))

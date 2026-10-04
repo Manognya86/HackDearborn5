@@ -1,5 +1,5 @@
-"""Text alerts, reminders, caregivers, power reports, audit log, account export/delete and translations.
-Needs DATABASE_URL with schema applied and demo data seeded. No message is really sent (no Twilio in tests)."""
+"""Reminders, caregivers, power reports, audit log, account export/delete and translations.
+Needs DATABASE_URL with schema applied and demo data seeded."""
 import io
 import json
 import zipfile
@@ -8,15 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from lifelog import auth, config, db, notify, services
+from lifelog import auth, config, db, services
 
 pytestmark = pytest.mark.skipif(not config.DATABASE_URL, reason="no DATABASE_URL")
-
-
-@pytest.fixture(autouse=True)
-def _no_twilio(monkeypatch):
-    for k in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM", "TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET"):
-        monkeypatch.setattr(config, k, "")
 
 
 def owner():
@@ -32,45 +26,12 @@ def temp_user():
         db.execute("DELETE FROM users WHERE id = %s", (u["id"],))
 
 
-def test_phone_numbers_are_normalized_or_rejected():
-    assert notify.normalize_phone("(313) 555-0123") == "+13135550123"
-    assert notify.normalize_phone("1 313 555 0123") == "+13135550123"
-    assert notify.normalize_phone("+44 20 7946 0958") == "+442079460958"
-    for bad in ("555-0123", "abc", "+0123"):
-        with pytest.raises(ValueError):
-            notify.normalize_phone(bad)
-
-
-def test_a_critical_alert_is_texted_and_called_once_per_contact(temp_user):
-    uid = temp_user["id"]
-    with db.system():
-        pid = db.one("SELECT id FROM products ORDER BY id LIMIT 1")["id"]
-        iid = db.one("INSERT INTO items (user_id, product_id, nickname, started_at) VALUES (%s,%s,'Test pen', now()) RETURNING id",
-                     (uid, pid))["id"]
-        db.execute("""INSERT INTO alert_contacts (user_id, name, phone, sms, voice) VALUES (%s,'Me','+13135550199',TRUE,TRUE)""", (uid,))
-    ev = {"type": "alert", "id": 987654, "item_id": iid, "kind": "frozen", "severity": "critical",
-          "message": "Test pen froze.", "resolved": False}
-    notify.on_alert(ev)
-    notify.on_alert(ev)                                     # the same alert again: no duplicate
-    notify.on_alert({**ev, "id": 987655, "severity": "warning", "kind": "warming_trend"})   # warnings aren't texted
-    with db.system():
-        rows = db.query("SELECT channel, status, body FROM notifications WHERE user_id = %s ORDER BY channel", (uid,))
-    assert [(r["channel"], r["status"]) for r in rows] == [("sms", "dry_run"), ("voice", "dry_run")]
-    assert "froze" in rows[0]["body"]
-
-
-def test_refill_reminders_go_out_once_per_threshold(temp_user):
+def test_reminders_list_the_soonest_use_by_first(temp_user):
     uid = temp_user["id"]
     with db.system():
         pid = db.one("SELECT id FROM products ORDER BY id LIMIT 1")["id"]
         iid = db.one("""INSERT INTO items (user_id, product_id, nickname, started_at, expires_on)
                         VALUES (%s,%s,'Refill pen', now(), %s) RETURNING id""", (uid, pid, date.today() + timedelta(days=2)))["id"]
-        db.execute("INSERT INTO alert_contacts (user_id, name, phone) VALUES (%s,'Me','+13135550198')", (uid,))
-    notify.send_reminders()
-    notify.send_reminders()
-    with db.system():
-        kinds = [r["kind"] for r in db.query("SELECT kind FROM notifications WHERE item_id = %s", (iid,))]
-    assert kinds == ["reminder-3"]
     tok = db.set_user(uid)
     try:
         r = services.reminders(uid)

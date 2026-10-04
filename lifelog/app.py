@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import assistant, auth, config, db, engine, forecast_ml, gem, medicines, notify, offline, realtime, seed, services, sim
+from . import assistant, auth, config, db, engine, forecast_ml, gem, medicines, offline, realtime, seed, services, sim
 from .models import StabilityModel
 
 app = FastAPI(title="LIFELOG Home")
@@ -791,66 +791,6 @@ def _start_outages():
 @app.get("/api/reminders")
 def get_reminders(days: int = 30):
     return services.reminders(db.me(), max(1, min(days, 365)))
-
-
-def _reminder_loop():
-    import time as _t
-    _t.sleep(30)
-    while True:
-        try:
-            notify.send_reminders()
-        except Exception:  # noqa: BLE001
-            pass
-        _t.sleep(3600)
-
-
-@app.on_event("startup")
-def _start_reminders():
-    import threading as _th
-    if config.DATABASE_URL:
-        _th.Thread(target=_reminder_loop, daemon=True, name="reminders").start()
-
-
-# ------------------------------------------------------------------ text and phone-call alerts
-class ContactIn(BaseModel):
-    name: str
-    phone: str
-    sms: bool = True
-    voice: bool = False
-    reminders: bool = True
-
-
-@app.get("/api/contacts")
-def list_contacts():
-    return {"contacts": db.query("SELECT * FROM alert_contacts WHERE user_id = %s AND active ORDER BY id", (db.me(),)),
-            "twilio": notify.configured(), "messages": notify.recent(db.me())}
-
-
-@app.post("/api/contacts")
-def add_contact(body: ContactIn):
-    try:
-        phone = notify.normalize_phone(body.phone)
-    except ValueError as e:
-        raise HTTPException(422, str(e)) from e
-    if not (body.sms or body.voice):
-        raise HTTPException(422, "Choose text messages, phone calls, or both.")
-    return db.one("""INSERT INTO alert_contacts (user_id, name, phone, sms, voice, reminders) VALUES (%s,%s,%s,%s,%s,%s)
-                     RETURNING *""", (db.me(), body.name.strip() or "Me", phone, body.sms, body.voice, body.reminders))
-
-
-@app.delete("/api/contacts/{contact_id}")
-def remove_contact(contact_id: int):
-    db.execute("UPDATE alert_contacts SET active = FALSE WHERE id = %s AND user_id = %s", (contact_id, db.me()))
-    return {"ok": True}
-
-
-@app.post("/api/contacts/{contact_id}/test")
-def test_contact(contact_id: int):
-    c = db.one("SELECT * FROM alert_contacts WHERE id = %s AND user_id = %s AND active", (contact_id, db.me()))
-    if not c:
-        raise HTTPException(404, "unknown contact")
-    body = "LIFELOG: test message. You'll get a text like this if a medicine freezes, overheats or runs out of safe life."
-    return [notify.deliver(c, ch, body, kind="test") for ch in ("sms", "voice") if c[ch]]
 
 
 # ------------------------------------------------------------------ caregivers: people I look after

@@ -1113,29 +1113,12 @@ $("#family-form").addEventListener("submit", (e) => {
   });
 });
 
-// ------------------------------------------------------------------ settings: alert contacts, language, password, data
+// ------------------------------------------------------------------ settings: language, password, data
 loaders.settings = async () => {
   $("#lang2").value = lang;
   $("#lang-note").textContent = I18N[lang]?.["note.english"] || "";
-  const c = await api("/api/contacts");
-  $("#twilio-note").innerHTML = c.twilio ? "" : `<div class="banner warn small">Text sending isn't connected on this server (no Twilio account in .env), so messages are recorded as a <b>dry run</b>: you can see exactly what would be sent below.</div>`;
-  $("#contact-list").innerHTML = c.contacts.map((x) => `<div class="dose-row"><div><b>${esc(x.name)}</b> <span class="muted">${esc(x.phone)}</span>
-      <div class="small muted">${[x.sms && t("settings.sms"), x.voice && t("settings.voice"), x.reminders && t("settings.reminders")].filter(Boolean).map(esc).join(" · ")}</div></div>
-      <div class="row" style="margin:0"><button class="btn" data-ctest="${x.id}" style="min-height:30px;padding:3px 10px;font-size:13px">${esc(t("settings.test"))}</button>
-      <button class="icon-btn" data-cdel="${x.id}" aria-label="Remove">✕</button></div></div>`).join("") || `<p class="muted small">No contacts yet.</p>`;
-  $("#message-list").innerHTML = c.messages.map((m) => `<div class="dose-row"><div>${fmt(m.created_at)} · <b>${esc(m.channel === "voice" ? "call" : "text")}</b> to ${esc(m.to_phone)} · ${esc(m.kind)}
-      <div class="muted">${esc(m.body)}</div></div><span class="pill ${m.status === "failed" ? "DO_NOT_USE" : m.status === "sent" ? "USE" : "CHECK"}">${esc(m.status.replace("_", " "))}</span></div>`).join("") || "None yet.";
-  $$("[data-ctest]").forEach((b) => b.onclick = (e) => busy(e.currentTarget, async () => { const r = await post(`/api/contacts/${b.dataset.ctest}/test`); toast(r.map((x) => `${x.channel}: ${x.status.replace("_", " ")}`).join(", ")); loaders.settings(); }));
-  $$("[data-cdel]").forEach((b) => b.onclick = async () => { await api(`/api/contacts/${b.dataset.cdel}`, { method: "DELETE" }); loaders.settings(); });
 };
 $("#lang2").addEventListener("change", (e) => setLang(e.target.value));
-$("#contact-form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  busy(e.submitter, async () => {
-    await post("/api/contacts", { name: $("#c-name").value, phone: $("#c-phone").value, sms: $("#c-sms").checked, voice: $("#c-voice").checked, reminders: $("#c-rem").checked });
-    $("#c-phone").value = ""; $("#c-name").value = ""; toast("Contact added"); loaders.settings();
-  });
-});
 $("#pw-form").addEventListener("submit", (e) => {
   e.preventDefault();
   busy(e.submitter, async () => { await post("/api/account/password", { current: $("#pw-cur").value, new: $("#pw-new").value }); $("#pw-cur").value = ""; $("#pw-new").value = ""; toast("Password changed"); });

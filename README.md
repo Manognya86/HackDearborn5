@@ -199,17 +199,9 @@ stored only as hashes and never committed). An existing account's password is ne
 
 ## Reaching people who aren't watching an app
 
-- **Text and phone-call alerts.** Settings → add a phone number for yourself or a caregiver. Critical alerts (frozen,
-  above the label's limit, budget used up, power outage, expired, in-use period over, predicted excursion) are sent once
-  per alert by text, and by a phone call that reads the alert aloud if you ask for calls. Sent through Twilio's REST API
-  when `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` (or `TWILIO_API_KEY_SID` + `TWILIO_API_KEY_SECRET`; a rejected key
-  falls back to the token) and `TWILIO_FROM` are set; without them every message is recorded as a **dry run** you can
-  read in Settings → Messages sent. `TWILIO_FROM` must be a phone number owned by the Twilio account, and a trial
-  account can only reach numbers verified in the Twilio Console (Phone Numbers → Verified Caller IDs).
 - **Refill and use-by reminders.** "Coming up" under My medicines lists every medicine whose use-by date (printed
   expiry or in-use limit, whichever is first) is within 30 days, with a one-click refill letter draft (no AI needed,
-  with its exposure receipt). Texts go out 7, 3 and 1 days before, once each; the alert job adds "expires soon" a week
-  before the printed date.
+  with its exposure receipt); the alert job adds "expires soon" a week before the printed date.
 - **People I care for.** Paste a share link someone sent you and see their medicines, statuses and open alerts next to
   your own (read-only; they can turn the link off at any time).
 - **"My power is out".** Utilities report outages per ZIP code. On Outage rescue, one tap confirms your home is out:

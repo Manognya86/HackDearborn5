@@ -25,13 +25,6 @@ DEMO_ACCOUNTS = {
 }
 # import live DTE outage areas every 10 minutes (set LIVE_OUTAGES=0 to turn off)
 LIVE_OUTAGES = os.getenv("LIVE_OUTAGES", "1").strip().lower() not in ("0", "false", "no")
-# Text and phone-call alerts (Twilio). Leave empty to record messages as a dry run instead of sending them.
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-# preferred: an API key (SK...) and its secret sign the requests instead of the account's auth token
-TWILIO_API_KEY_SID = os.getenv("TWILIO_API_KEY_SID", "").strip()
-TWILIO_API_KEY_SECRET = os.getenv("TWILIO_API_KEY_SECRET", "").strip()
-TWILIO_FROM = os.getenv("TWILIO_FROM", "").strip()          # your Twilio phone number, +1...
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").strip()            # link added to texts, e.g. https://lifelog.example.org
 # extra Kubra StormCenter feeds as "name:instance_id:view_id;..." (e.g. Consumers Energy, IDs from its outage map)
 OUTAGE_FEEDS = [("DTE", "4fbb3ad3-e01d-4d71-9575-d453769c1171", "8ed2824a-bd92-474e-a7c4-848b812b7f9b")] + [
