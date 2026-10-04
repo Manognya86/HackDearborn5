@@ -253,6 +253,10 @@ def run(with_weather: bool = True) -> dict:
                                      VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
                                   (u, p, nick, t_start, opened, expires, lot)).fetchone()["id"], prof))
 
+        # real Dearborn outdoor temperature for the history window: the EpiPen you carry follows it in daytime
+        from . import forecast_ml
+        wx = forecast_ml.outdoor(config.HOME_LAT, config.HOME_LON)
+        w_mean = sum(wx.values()) / len(wx) if wx else 0.0
         with c.cursor() as cur, cur.copy("COPY readings (ts, item_id, temp_c, source) FROM STDIN") as cp:
             n = 0
             for k, (item_id, prof) in enumerate(iid):
@@ -261,6 +265,10 @@ def run(with_weather: bool = True) -> dict:
                     if prof == "fridge_gap" and t > t_end - timedelta(hours=6):
                         continue  # sensor offline: these readings arrive later via /api/demo/late_upload
                     v = room(t) if prof == "room" else fridge(t)
+                    if k == 2 and wx and 8 <= t.astimezone(timezone(timedelta(hours=-4))).hour < 20:
+                        w = wx.get(t.replace(minute=0, second=0, microsecond=0))
+                        if w is not None:   # carried around outside: about 0.35 C per C of outdoor anomaly
+                            v += 0.35 * (w - w_mean)
                     ago = (t_end - t).total_seconds() / 86400
                     if k == 0 and 9.0 < ago < 9.125:      # Mounjaro: 3 h in a bag at work, ~27C
                         v = 27 + rng.gauss(0, 0.4)

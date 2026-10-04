@@ -105,7 +105,7 @@ async function health() {
 }
 
 // ------------------------------------------------------------------ medicines list
-let currentItem = null, chart = null, myItems = [];
+let currentItem = null, chart = null, myItems = [], currentModel = null;
 async function loadItems() {
   const items = await api("/api/items");
   myItems = items;
@@ -142,6 +142,7 @@ async function openItem(id, { quiet = false } = {}) {
   $$(".med").forEach((el) => el.classList.toggle("active", +el.dataset.id === id));
   const d = await api(`/api/items/${id}`);
   const s = d.state, m = d.item.model, st = d.status;
+  currentModel = m;
   const uncertain = d.worst_case < s.remaining - 0.01;
   const urgent = d.precautions.filter((p) => p.level !== "info");
   const top = urgent[0];
@@ -204,6 +205,10 @@ async function openItem(id, { quiet = false } = {}) {
         ${d.burners.length ? d.burners.map((b) => `<div class="burn-row"><div>${esc(b.zone)}<div class="muted small">${fmt(b.started)} · ${hrs(b.minutes / 60)} · peak ${temp(b.peak_temp)}</div></div>
           <div class="burn-bar" style="width:${(b.burn / maxBurn) * 100}%"></div><div class="num">−${pct(b.burn, 1)}</div></div>`).join("") : `<p class="muted">It has stayed within the label's limits.</p>`}
       </details>
+      <details class="fold" data-k="ml" ${openFolds.includes("ml") || !isMobile() ? "open" : ""}>
+        <summary>Next 24 hours <span class="muted">forecast from a model trained for this medicine</span></summary>
+        <div id="ml-body" class="muted">Training…</div>
+      </details>
       <details class="fold" data-k="history" ${openFolds.includes("history") ? "open" : ""}>
         <summary>Last 30 days <span class="muted">daily exposure calendar</span></summary>
         <div id="history-body" class="muted">Loading…</div>
@@ -251,7 +256,7 @@ async function openItem(id, { quiet = false } = {}) {
   if (keepAi) $("#ai-box").innerHTML = keepAi;
   if ($("details[data-k=chart]").open) drawChart(d);
   $("details[data-k=chart]").addEventListener("toggle", (e) => e.target.open && drawChart(d));
-  for (const [k, fn] of [["history", loadHistory], ["recalls", loadRecalls]]) {
+  for (const [k, fn] of [["ml", loadMl], ["history", loadHistory], ["recalls", loadRecalls]]) {
     const el = $(`details[data-k=${k}]`);
     if (el.open) fn(id);
     el.addEventListener("toggle", () => el.open && fn(id));
@@ -306,6 +311,51 @@ function renderVerdict(v) {
   $("#ai-box").innerHTML = `<div class="ai-box" dir="auto">${aiTag(v, "Gemini · based on your data and the label")}
     <div class="verdict ${esc(v.verdict)}">${esc(v.headline)}</div><p>${esc(v.explanation)}</p>
     <ul>${v.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>${v.cited_quotes.map((q) => `<blockquote>${esc(q)}</blockquote>`).join("")}</div>`;
+}
+
+let mlChart = null;
+async function loadMl(id, retrain = false) {
+  const f = retrain ? await post(`/api/items/${id}/ml/train`) : await api(`/api/items/${id}/ml`);
+  const body = $("#ml-body"); if (!body) return;
+  body.classList.remove("muted");
+  if (f.status !== "ok") { body.innerHTML = `<p class="small">${esc(f.message || "Not enough data to train yet.")}</p>`; return; }
+  const r = f.risk, mae = f.backtest_mae, best = f.model;
+  const names = { persistence: "Same as now", seasonal: "Daily pattern", seasonal_ar: "Pattern + memory", seasonal_ar_weather: "Pattern + memory + weather" };
+  const skill = f.skill_vs_baseline;
+  body.innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="v">${pct(r.p_above_storage)}</div><div class="k">chance it goes above ${currentModel.target_max_c}°C in 24 h${(() => {
+        const hi = Math.max(currentModel.target_max_c, ...(currentModel.bands || []).map((b) => b.max_c));
+        return hi > currentModel.target_max_c ? ` (the label allows up to ${hi}°C; chance of passing that: ${pct(r.p_above_label_limit)})` : "";
+      })()}</div></div>
+      <div class="stat"><div class="v">${pct(r.budget_median)}</div><div class="k">expected budget left in 24 h (worst 1 in 10: ${pct(r.budget_p10)})</div></div>
+      <div class="stat"><div class="v">${r.p_freeze > 0 ? pct(r.p_freeze) : "0%"}</div><div class="k">chance of freezing</div></div>
+    </div>
+    <div class="chart-box" style="height:220px"><canvas id="ml-chart" aria-label="24 hour forecast"></canvas></div>
+    <p class="small"><b>Model chosen for this medicine:</b> ${esc(f.model_label)}${skill != null ? `, <b>${skill > 0 ? Math.round(skill * 100) + "% more accurate" : "no better"}</b> than assuming it stays as it is` : ""}
+      (backtested on its own last 2 days).${f.uses_weather ? ` It follows the outdoor weather: ${f.params.beta > 0 ? "+" : ""}${f.params.beta}°C per °C outside.` : ""}
+      ${f.params.phi ? ` Deviations fade by ${Math.round((1 - f.params.phi) * 100)}% per hour.` : ""}</p>
+    <div class="table-wrap"><table><tr><th>Candidate</th><th class="num">Avg error</th></tr>
+      ${Object.entries(mae).sort((a, b) => a[1] - b[1]).map(([k, v]) => `<tr class="${k === best ? "best" : ""}"><td>${esc(names[k] || k)}${k === best ? " · chosen" : ""}</td><td class="num">${v.toFixed(2)}°C</td></tr>`).join("")}</table></div>
+    <div class="row"><button class="btn" id="ml-retrain">Retrain now</button><span class="muted small">Trained ${fmt(f.trained_at)} on ${f.trained_on_hours} hours of data from Tiger Data · retrains every hour</span></div>`;
+  $("#ml-retrain").onclick = (e) => busy(e.currentTarget, () => loadMl(id, true));
+  mlChart?.destroy();
+  const ct = cssVar("--chart-temp"), muted = cssVar("--muted"), border = cssVar("--border");
+  const fc = f.forecast;
+  mlChart = new Chart($("#ml-chart"), {
+    type: "line",
+    data: { datasets: [
+      { label: "80% range (high)", data: fc.map((p) => ({ x: new Date(p.t), y: p.hi })), borderWidth: 0, pointRadius: 0, backgroundColor: ct + "33", fill: "+1" },
+      { label: "80% range (low)", data: fc.map((p) => ({ x: new Date(p.t), y: p.lo })), borderWidth: 0, pointRadius: 0, fill: false },
+      { label: "Forecast °C", data: fc.map((p) => ({ x: new Date(p.t), y: p.temp })), borderColor: ct, borderWidth: 2, pointRadius: 0 },
+      { label: "Label max", data: [{ x: new Date(fc[0].t), y: currentModel.target_max_c }, { x: new Date(fc.at(-1).t), y: currentModel.target_max_c }],
+        borderColor: muted, borderDash: [5, 5], borderWidth: 1, pointRadius: 0 },
+    ] },
+    options: { maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+      scales: { x: { type: "time", grid: { color: border }, ticks: { color: muted, maxTicksLimit: 6 } },
+                y: { grid: { color: border }, ticks: { color: muted }, title: { display: true, text: "°C", color: muted } } },
+      plugins: { legend: { display: false } } },
+  });
 }
 
 async function loadHistory(id) {

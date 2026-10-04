@@ -251,6 +251,27 @@ LANGUAGE sql STABLE AS $$
       AND trend_n >= 4 AND slope <= -1 AND coalesce(r2, 0) >= 0.6
       AND last_temp > (model->>'freeze_c')::float8
       AND (last_temp - (model->>'freeze_c')::float8) / -slope <= 1
+    UNION ALL
+    -- 24-hour outlook: the item's own trained model (ml_models) predicts it will leave labeled storage
+    -- fridge medicines: likely to leave 2-8C; others: likely to pass the label's absolute limit (beyond allowances)
+    SELECT l.id, 'predicted_excursion', 'warning',
+           l.nickname || ': its forecasting model gives a '
+           || round(CASE WHEN (l.model->>'target_max_c')::float8 <= 10 THEN (mm.risk->>'p_above_storage')::numeric
+                         ELSE (mm.risk->>'p_above_label_limit')::numeric END * 100)
+           || '% chance of going above '
+           || CASE WHEN (l.model->>'target_max_c')::float8 <= 10 THEN (l.model->>'target_max_c') || '°C'
+                   ELSE 'its labeled limit' END || ' in the next 24 hours.'
+    FROM last l JOIN ml_models mm ON mm.item_id = l.id
+    WHERE mm.trained_at > now() - INTERVAL '3 hours' AND l.zone = 'Labeled storage'
+      AND CASE WHEN (l.model->>'target_max_c')::float8 <= 10 THEN (mm.risk->>'p_above_storage')::numeric >= 0.5
+               ELSE (mm.risk->>'p_above_label_limit')::numeric >= 0.3 END
+    UNION ALL
+    -- sensor health: a reading that doesn't move for 2 hours is a stuck or dead sensor, not a perfect fridge
+    SELECT l.id, 'sensor_stuck', 'warning',
+           l.nickname || ' sensor has reported exactly the same temperature for 2 hours. It may be stuck; check it.'
+    FROM last l
+    WHERE (SELECT count(*) >= 20 AND stddev_pop(r.temp_c) < 0.005 FROM readings r
+           WHERE r.item_id = l.id AND r.ts > now() - INTERVAL '2 hours')
 $$;
 
 -- Scheduled by add_job every minute: opens new alerts, refreshes messages, resolves cleared ones.

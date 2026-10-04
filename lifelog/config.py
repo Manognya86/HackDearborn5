@@ -11,6 +11,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_DISABLED = os.getenv("GEMINI_DISABLED", "").strip().lower() in ("1", "true", "yes")
 
 
+# hourly retraining of the per-medicine forecasting models (set DISABLE_BACKGROUND_TRAINING=1 to turn off)
+DISABLE_BACKGROUND_TRAINING = os.getenv("DISABLE_BACKGROUND_TRAINING", "").strip().lower() in ("1", "true", "yes")
+
+
 def db_host() -> str:
     from urllib.parse import urlparse
     return urlparse(os.getenv("DATABASE_URL", "")).hostname or "unknown"

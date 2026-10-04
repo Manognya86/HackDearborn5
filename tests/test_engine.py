@@ -142,3 +142,28 @@ def test_reset_is_refused_on_a_remote_database(monkeypatch):
     assert not config.reset_allowed()
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@localhost:5432/x")
     assert config.reset_allowed()
+
+
+def test_model_selection_learns_each_items_own_behaviour():
+    """A synthetic 'carried' item that follows the weather gets the weather model; a flat fridge doesn't."""
+    import math
+    from datetime import datetime, timedelta, timezone
+    from lifelog import forecast_ml as fm
+    t0 = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    hours = [t0 + timedelta(hours=k) for k in range(14 * 24)]
+    wx = {h: 15 + 6 * math.sin(k / 24 * 2 * math.pi) + 4 * math.sin(k / 77) for k, h in enumerate(hours + [hours[-1] + timedelta(hours=j) for j in range(1, 30)])}
+    carried = [(h, 22 + 0.4 * (wx[h] - 15) + 0.05 * math.sin(k)) for k, h in enumerate(hours)]
+    fridge = [(h, 4.5 + 0.3 * math.sin(k * 1.7)) for k, h in enumerate(hours)]
+    sc = fm.backtest(carried, wx)
+    assert min(sc, key=sc.get) == "seasonal_ar_weather"
+    assert fm.fit(carried, "seasonal_ar_weather", wx)["beta"] > 0.3
+    sf = fm.backtest(fridge, wx)
+    assert min(sf, key=sf.get) != "seasonal_ar_weather" or abs(fm.fit(fridge, "seasonal_ar_weather", wx)["beta"]) < 0.05
+
+
+def test_simulation_is_calibrated_for_a_stable_fridge():
+    from lifelog import forecast_ml as fm
+    from lifelog.seed import PRODUCTS
+    p = {"phi": 0.5, "sigma": 0.3}
+    mc = fm.simulate(p, [4.5] * 24, 1.0, PRODUCTS["insulin"])
+    assert mc["p_freeze"] == 0 and mc["p_above_storage"] == 0 and mc["budget_median"] == 1.0

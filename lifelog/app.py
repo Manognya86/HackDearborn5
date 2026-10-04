@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import assistant, config, db, engine, gem, offline, realtime, seed, services, sim
+from . import assistant, config, db, engine, forecast_ml, gem, offline, realtime, seed, services, sim
 from .models import StabilityModel
 
 app = FastAPI(title="LIFELOG Home")
@@ -469,6 +469,55 @@ def ask(body: AskIn, lang: str = "en"):
     return assistant.ask(body.question, body.history, lang)
 
 
+# ------------------------------------------------------------------ per-medicine forecasting models
+@app.get("/api/items/{item_id}/ml")
+def item_ml(item_id: int):
+    _item_or_404(item_id)
+    return forecast_ml.get(item_id)
+
+
+@app.post("/api/items/{item_id}/ml/train")
+def item_ml_train(item_id: int):
+    _item_or_404(item_id)
+    res = forecast_ml.train(item_id)
+    services.check_alerts()
+    return res
+
+
+@app.post("/api/ml/train-all")
+def ml_train_all():
+    res = forecast_ml.train_all()
+    services.check_alerts()
+    return res
+
+
+@app.get("/api/ml")
+def ml_overview():
+    """Every trained model: which candidate won for which medicine, and by how much."""
+    return db.query("""SELECT m.item_id, i.nickname, p.name AS product, m.model, m.metrics, m.risk, m.trained_at
+                       FROM ml_models m JOIN items i ON i.id = m.item_id JOIN products p ON p.id = i.product_id
+                       JOIN users u ON u.id = i.user_id WHERE u.is_me ORDER BY i.id""")
+
+
+def _retrain_loop():
+    import time as _t
+    _t.sleep(20)
+    while True:
+        try:
+            forecast_ml.train_all()
+            services.check_alerts()
+        except Exception:
+            pass
+        _t.sleep(3600)
+
+
+@app.on_event("startup")
+def _start_retraining():
+    import threading as _th
+    if config.DATABASE_URL and not config.DISABLE_BACKGROUND_TRAINING:
+        _th.Thread(target=_retrain_loop, daemon=True, name="ml-retrain").start()
+
+
 # ------------------------------------------------------------------ exposure receipts (verifiable)
 @app.post("/api/items/{item_id}/receipt")
 def receipt(item_id: int):
@@ -591,7 +640,10 @@ def demo(scenario: str, auto_refresh: bool = True):
                                      "reset erases everything in it. Set ALLOW_DEMO_RESET=1 in .env if you really mean it.")
         sim.stop()
         seed.apply_schema()
-        return seed.run(with_weather=True)
+        res = seed.run(with_weather=True)
+        forecast_ml.train_all()
+        services.check_alerts()
+        return res
     if scenario == "hot_car":
         res = seed.scenario_hot_car(seed.me_item("EpiPen"))
     elif scenario == "late_upload":

@@ -265,7 +265,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; backgr
   .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: none; color: var(--faint); font-size: 11px; font-weight: 600; position: relative; cursor: pointer; }
   .tabbar button.active { color: var(--brand); }
   .tabbar .badge { position: absolute; top: 6px; left: calc(50% + 6px); margin: 0; }
-  .meds-layout.detail-open .med-grid, .meds-layout.detail-open + .x, #view-meds.detail-open .summary { display: none; }
+  .meds-layout.detail-open .med-grid, #view-meds.detail-open .summary-row { display: none; }
   #view-meds:not(.detail-open) .detail { display: none; }
 }
 

@@ -93,6 +93,17 @@ CREATE TABLE IF NOT EXISTS webhooks (
     last_at     TIMESTAMPTZ
 );
 
+-- Per-medicine forecasting models (trained in lifelog/forecast_ml.py on each item's own history)
+CREATE TABLE IF NOT EXISTS ml_models (
+    item_id    INT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    model      TEXT NOT NULL,
+    params     JSONB NOT NULL,
+    metrics    JSONB NOT NULL,
+    forecast   JSONB NOT NULL,
+    risk       JSONB NOT NULL,
+    trained_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ---------------------------------------------------------------- telemetry
 CREATE TABLE IF NOT EXISTS readings (
     ts          TIMESTAMPTZ NOT NULL,
