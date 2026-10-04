@@ -416,3 +416,42 @@ def apply_schema() -> None:
         if stale:
             db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_5m', NULL, time_bucket('5 minutes', now()))")
     add_policy()
+
+
+def sync_reference_data() -> dict:
+    """Non-destructive top-up for an existing database (scripts/migrate.py): add medicines that are missing, refresh
+    the label quotes of existing ones, add the evidence proposals and the demo accounts. Readings, items, alerts and
+    anything a pharmacist approved are left as they are."""
+    added, updated = [], []
+    with db.system():
+        for key, m in PRODUCTS.items():
+            row = db.one("SELECT id, model FROM products WHERE name = %s ORDER BY id LIMIT 1", (m["product_name"],))
+            if not row:
+                db.execute("""INSERT INTO products (name, model, source, source_label, source_url) VALUES (%s,%s,'fda',%s,%s)""",
+                           (m["product_name"], json.dumps(m), SOURCES[key]["label"], SOURCES[key]["url"]))
+                added.append(key)
+                continue
+            new = dict(m)
+            if not row["model"].get("above_limit_is_assumption", True):   # keep a pharmacist-approved tolerance
+                for f in ("above_limit_budget_hours", "above_limit_is_assumption", "above_limit_quote"):
+                    new[f] = row["model"][f]
+            if new != row["model"]:
+                db.execute("UPDATE products SET model = %s, source_label = %s, source_url = %s WHERE id = %s",
+                           (json.dumps(new), SOURCES[key]["label"], SOURCES[key]["url"], row["id"]))
+                updated.append(key)
+        for key, ev in EVIDENCE.items():
+            pid = db.one("SELECT id FROM products WHERE name = %s ORDER BY id LIMIT 1", (PRODUCTS[key]["product_name"],))["id"]
+            if not db.one("SELECT 1 AS x FROM evidence WHERE product_id = %s", (pid,)):
+                db.execute("""INSERT INTO evidence (product_id, field, current_value, proposed_value, citation, url, finding, derivation)
+                              VALUES (%s, 'above_limit_budget_hours', %s, %s, %s, %s, %s, %s)""",
+                           (pid, PRODUCTS[key]["above_limit_budget_hours"], ev["proposed"], ev["citation"], ev["url"],
+                            ev["finding"], ev["derivation"]))
+        db.execute("""UPDATE users SET email = 'demo.patient@lifelog.example'
+                      WHERE id = (SELECT id FROM users WHERE is_me ORDER BY id LIMIT 1) AND email IS NULL
+                        AND NOT EXISTS (SELECT 1 FROM users WHERE lower(email) = 'demo.patient@lifelog.example')""")
+        if not db.one("SELECT 1 AS x FROM users WHERE role = 'pharmacist'"):
+            db.execute("""INSERT INTO users (name, is_me, can_host, lat, lon, geom, email, role, credentials)
+                          VALUES ('Demo Pharmacist', FALSE, FALSE, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                                  'demo.pharmacist@lifelog.example', 'pharmacist', 'PharmD (demo account)')""",
+                       (REFUGES[0][2], REFUGES[0][3], REFUGES[0][3], REFUGES[0][2]))
+    return {"medicines_added": added, "label_quotes_updated": updated}
