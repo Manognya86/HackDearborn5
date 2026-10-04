@@ -1023,6 +1023,7 @@ async function signOut() { await post("/api/auth/logout"); location.href = "/log
 async function loadMe() {
   me = await api("/api/me");
   document.body.classList.toggle("pharmacist", me.role === "pharmacist");
+  document.body.classList.toggle("owner", !!me.owner);
   $("#account").innerHTML = `<b>${esc(me.name)}${me.role === "pharmacist" ? `<span class="role-tag">Pharmacist</span>` : ""}</b>
     <span class="muted">${esc(me.email || "")}</span><br><button class="btn" id="signout">Sign out</button>`;
   $("#account-m").textContent = `Signed in as ${me.name}${me.email ? ` (${me.email})` : ""}`;

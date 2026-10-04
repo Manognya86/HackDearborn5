@@ -21,7 +21,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.stdout.reconfigure(encoding="utf-8")
-from lifelog import db  # noqa: E402
+from lifelog import config, db  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--base", default="http://localhost:8000")
@@ -31,6 +31,10 @@ ap.add_argument("--gemini-gap", type=float, default=15, help="seconds between Ge
 args = ap.parse_args()
 cx = httpx.Client(base_url=args.base, timeout=240)
 results: list[tuple[str, str, str]] = []
+# everything under /api needs a session: sign in as the owner demo (demo button; works without passwords)
+_r = cx.post("/api/auth/demo", params={"role": "owner"})
+if _r.status_code != 200:
+    sys.exit(f"could not sign in as the owner demo: HTTP {_r.status_code} {_r.text[:200]}")
 
 
 def check(name, fn, gemini=False):
@@ -305,6 +309,116 @@ if args.demo:
     check("GET /api/rescue during storm", lambda: (lambda r: (must(r["people"], "nobody in outage"), f"{sum(p['at_risk'] for p in r['people'])} at risk; {r['people'][0]['warming_model']}")[1])(ok(cx.get("/api/rescue"))))
     check("POST /api/demo/clear_storm", lambda: ok(cx.post("/api/demo/clear_storm")))
     check("POST repair late windows (insulin)", lambda: ok(cx.post(f"/api/items/{[i for i in items if 'Insulin' in i['nickname']][0]['id']}/repair")))
+
+# ------------------------------------------------------------------ accounts, privacy, doses, review, outages, developers
+def signed_in(role):
+    c = httpx.Client(base_url=args.base, timeout=120)
+    ok(c.post("/api/auth/demo", params={"role": role}))
+    return c
+
+
+def accounts():
+    out = []
+    for role in ("owner", "customer", "pharmacist"):
+        email, pw = config.DEMO_ACCOUNTS[role]
+        if not pw:
+            out.append(f"{role}: no password in .env (demo button only)")
+            continue
+        c = httpx.Client(base_url=args.base, timeout=60)
+        ok(c.post("/api/auth/login", json={"email": email, "password": pw}))
+        me = ok(c.get("/api/me"))
+        must(me["email"] == email, f"signed in as {me['email']}")
+        must(c.post("/api/auth/login", json={"email": email, "password": pw + "x"}).status_code == 401, "wrong password accepted")
+        ok(c.post("/api/auth/logout"))
+        must(c.get("/api/items").status_code == 401, "still signed in after logout")
+        out.append(f"{role}: password login, wrong password rejected, logout")
+    must(httpx.get(args.base + "/api/items").status_code == 401, "anonymous request allowed")
+    return "; ".join(out)
+
+
+def privacy():
+    cu = signed_in("customer")
+    mine = ok(cu.get("/api/items"))
+    must(len(mine) == 3, f"customer should have 3 medicines, has {len(mine)}")
+    owner_ids = {i["id"] for i in items}
+    must(not owner_ids & {i["id"] for i in mine}, "customer sees owner medicines")
+    must(cu.get(f"/api/items/{IID}").status_code == 404, "customer can open the owner's medicine")
+    must(cu.post(f"/api/items/{IID}/doses", json={}).status_code == 404, "customer can log a dose on the owner's medicine")
+    must(cu.post("/api/demo/hot_car").status_code == 403, "customer can run demo controls")
+    must(cu.get("/api/review").status_code == 403, "customer can open the pharmacist review")
+    d = ok(cu.get(f"/api/items/{mine[0]['id']}"))
+    must(d["timeline"], "customer medicine has no data")
+    return f"customer: {', '.join(i['nickname'][:24] for i in mine)}; owner's data hidden; demo + review blocked"
+
+
+def doses():
+    d = ok(cx.post(f"/api/items/{IID}/doses", json={"note": "validation"}))
+    must(d["status_at_dose"] and 0 <= d["budget_at_dose"] <= 1, f"bad dose {d}")
+    lst = ok(cx.get(f"/api/items/{IID}/doses"))
+    must(any(x["id"] == d["id"] for x in lst), "dose not listed")
+    ok(cx.delete(f"/api/doses/{d['id']}"))
+    must(not any(x["id"] == d["id"] for x in ok(cx.get(f"/api/items/{IID}/doses"))), "dose not deleted")
+    return f"logged ({d['status_at_dose']}, {d['budget_at_dose'] * 100:.1f}% budget), listed, deleted"
+
+
+def receipt():
+    r = ok(cx.post(f"/api/items/{IID}/receipt"))
+    v = httpx.get(f"{args.base}/api/receipts/{r['code']}").json()    # public: no sign-in needed
+    must(v["matches"], f"fresh receipt doesn't verify: {v.get('reason')}")
+    must("<html" in httpx.get(f"{args.base}/r/{r['code']}").text.lower(), "no receipt page")
+    return f"receipt {r['code']} verifies publicly"
+
+
+def review():
+    ph = signed_in("pharmacist")
+    q = ok(ph.get("/api/review"))
+    must(len(q) >= 22, f"only {len(q)} medicines in the review queue")
+    must(all(p["checklist"] for p in q), "a medicine has no care checklist to review")
+    ev = [e for p in q for e in p["evidence"]]
+    return f"{len(q)} medicines to review, {len(ev)} evidence proposals ({', '.join(sorted({e['status'] for e in ev}))})"
+
+
+def developers():
+    dev = ok(cx.post("/api/devices", json={"item_id": IID, "label": "validation sensor"}))
+    r = httpx.post(f"{args.base}/v1/readings", json={"temp_c": 4.4}, headers={"Authorization": f"Bearer {dev['token']}"})
+    must(r.status_code == 200 and r.json().get("inserted") == 1, f"device ingest failed: {r.text[:200]}")
+    must(httpx.post(f"{args.base}/v1/readings", json={"temp_c": 4.4}, headers={"Authorization": "Bearer nope"}).status_code == 401, "bad key accepted")
+    ok(cx.delete(f"/api/devices/{dev['token']}"))
+    h = ok(cx.post("/api/webhooks", json={"url": "https://example.com/lifelog-validation"}))
+    must(h["secret"].startswith("whsec_"), "no webhook secret")
+    ok(cx.delete(f"/api/webhooks/{h['id']}"))
+    ok(cx.get("/api/schema/stability-model")); ok(cx.get("/api/products"))
+    return "device key -> /v1/readings, bad key rejected, revoke; webhook add/remove; schema; products"
+
+
+def ml():
+    m = ok(cx.get(f"/api/items/{IID}/ml"))
+    must(m.get("status") in ("ok", "not_enough_data"), f"ml status {m.get('status')}")
+    return f"{m.get('model_label', m.get('status'))}" + (f", 24 h risk above storage {m['risk']['p_above_storage']:.0%}" if m.get("risk") else "")
+
+
+def outages():
+    s_ = ok(cx.get("/api/outages/status"))
+    return f"live feed {'on' if s_['enabled'] else 'off'} · {s_.get('areas', 0)} areas · {s_.get('customers', 0)} customers"
+
+
+def alert_ack():
+    a = ok(cx.get("/api/alerts"))
+    if not a:
+        return "no open alerts to acknowledge"
+    ok(cx.post(f"/api/alerts/{a[0]['id']}/ack"))
+    return f"acknowledged '{a[0]['kind']}'"
+
+
+check("sign-in with password (owner, customer, pharmacist)", accounts)
+check("privacy: customer vs owner (row-level security)", privacy)
+check("doses: log, list, delete", doses)
+check("exposure receipt + public verification", receipt)
+check("pharmacist review queue", review)
+check("developer platform: device key, webhooks", developers)
+check("per-medicine forecast", ml)
+check("live outage feed status", outages)
+check("acknowledge an alert", alert_ack)
 
 # ------------------------------------------------------------------ cleanup
 if probe:

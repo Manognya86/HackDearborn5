@@ -150,6 +150,18 @@ This is a decision-support prototype, not medical advice.
 
 ## Accounts, privacy and review
 
+**Demo accounts.** The sign-in page has one-click buttons for three accounts (turn off with `ENABLE_DEMO_LOGIN=0`):
+
+| Account | Email | What you see |
+|---|---|---|
+| Owner | `owner@lifelog.example` | Manu: 6 medicines with 14 days of history, doses, receipts, and the demo controls (only this account can use them) |
+| Customer | `customer@lifelog.example` | Alex: Dupixent, Humalog in use at room temperature, Repatha. Cannot see the owner's medicines |
+| Pharmacist | `pharmacist@lifelog.example` | The review queue: rules, care-checklist wording and heat-tolerance evidence for all 22 medicines |
+
+Email + password sign-in works for these accounts when you set `DEMO_OWNER_PASSWORD`, `DEMO_CUSTOMER_PASSWORD` and
+`DEMO_PHARMACIST_PASSWORD` in `.env` before running `scripts/setup_db.py` or `scripts/migrate.py` (passwords are
+stored only as hashes and never committed). An existing account's password is never overwritten.
+
 - **Sign-in.** Email + password accounts (PBKDF2-SHA256, 310,000 iterations, per-user salt) with an HttpOnly,
   SameSite=Lax session cookie. `/login` also has **Try the demo** buttons for the seeded patient and a demo pharmacist
   (`ENABLE_DEMO_LOGIN=0` turns them off).
@@ -261,7 +273,7 @@ cp .env.example .env        # fill GEMINI_API_KEY and DATABASE_URL
 .venv/Scripts/python scripts/setup_db.py
 .venv/Scripts/uvicorn lifelog.app:app --port 8000
 ```
-Open http://localhost:8000 and press **Try the demo → Patient** (or create an account).
+Open http://localhost:8000 and press **Try the demo → Owner** (or create an account).
 Upgrading an existing database without losing data: `.venv/Scripts/python scripts/migrate.py`.
 
 ### Database options
@@ -338,7 +350,7 @@ model per day, and one chatbot question uses 3 to 5** (one per tool round): enab
 project before judging.
 
 ## 5-minute demo script
-0. **Sign in:** `/login` → *Try the demo → Patient*. (A new account starts empty and can't see the demo patient's data.)
+0. **Sign in:** `/login` → *Try the demo → Owner*. (A new account starts empty and can't see the demo patient's data.)
 1. **Demo controls → Reset.** My medicines: four medicines near 100%. The Lantus spare shows *sensor silent*; the Victoza pen must be used within 3 days of its in-use period. (If scale data is loaded for judging, skip Reset: it returns to the small seed.)
 2. **Add medicine:** upload a real label photo. Gemini builds the model with quotes. Track it.
 3. **Demo controls → EpiPen: hot car.** Open the EpiPen: budget drops to ~45%, "Above labeled limit, peak 48°C". The what-if table shows that moving it indoors saves it. Click **Is it safe to use?**
@@ -349,7 +361,7 @@ project before judging.
 8. **Ask LIFELOG:** "Which of my medicines is in the worst shape, and why?" Gemini calls the tools and shows which.
 9. **Doses:** open the Victoza pen → *Doses taken*: two weeks of 8 am doses, each with the status it had then.
    Tap **I took a dose**, then make an exposure receipt: the dose is in it.
-10. **Pharmacist:** sign out → *Try the demo → Pharmacist reviewer*. Approve the EpiPen wording and its new evidence
+10. **Customer, then pharmacist:** sign out → *Customer* (three different medicines, none of the owner's), then *Pharmacist*. Approve the EpiPen wording and its new evidence
     (10,752 h). Back as the patient, rerun *EpiPen: hot car*: the same 2 hours now cost a fraction of what they did,
     and the label section cites the paper. **Outage rescue** shows the live DTE outage map next to the demo storm.
 11. **Under the hood:** compression ratio, scheduled jobs, rollup vs raw timings (the 30-day calendar is ~200× faster from `readings_1d` at scale). Optionally **Start live sensors** and watch the dashboard move.

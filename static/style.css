@@ -331,3 +331,8 @@ body.pharmacist .pharm-only { display: flex !important; }
 .live-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 /* Leaflet draws outage areas and markers in one big <svg>: keep the icon sizing above away from it */
 .leaflet-pane svg { width: auto; height: auto; max-width: none; }
+.demo-accounts { display: grid; gap: 8px; margin-top: 8px; }
+.demo-accounts .btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 10px 14px; }
+.demo-accounts .btn span { font-weight: 400; font-size: 13px; opacity: .85; }
+.owner-only { display: none !important; }
+body.owner .owner-only { display: flex !important; }

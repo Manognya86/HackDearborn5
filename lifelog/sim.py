@@ -17,14 +17,17 @@ def _items() -> list[dict]:
                (SELECT r.temp_c FROM readings r WHERE r.item_id = i.id ORDER BY r.ts DESC LIMIT 1) AS last_t,
                (SELECT max(r.ts) FROM readings r WHERE r.item_id = i.id) AS last_ts,
                (SELECT o.indoor_temp_c FROM outages o JOIN users u ON ST_Contains(o.area, u.geom)
-                 WHERE o.active AND u.id = i.user_id AND o.source NOT LIKE '%-live' LIMIT 1) AS outage_t
+                 WHERE o.active AND u.id = i.user_id AND o.source NOT LIKE '%-live' LIMIT 1) AS outage_t,
+               -- where this medicine usually is (fridge, room, bag): its median over the last day
+               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY r.avg_temp) FROM readings_5m r
+                 WHERE r.item_id = i.id AND r.bucket > now() - INTERVAL '24 hours') AS usual_t
         FROM items i JOIN products p ON p.id = i.product_id
         JOIN users su ON su.id = i.user_id AND NOT su.synthetic""")
 
 
 def _next_temp(it: dict) -> float:
     m = it["model"]
-    home = 4.5 if m["target_max_c"] <= 10 else 22.0
+    home = it.get("usual_t") if it.get("usual_t") is not None else (4.5 if m["target_max_c"] <= 10 else 22.0)
     last = it["last_t"] if it["last_t"] is not None else home
     if it["outage_t"] is not None:
         goal, tau = it["outage_t"], 40.0   # fridge without power, demo-accelerated warming

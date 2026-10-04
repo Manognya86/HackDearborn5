@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="/static/style.css?v=12">
+<link rel="stylesheet" href="/static/style.css?v=13">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -57,7 +57,7 @@
       <div class="nav-sep">Behind the scenes</div>
       <button data-view="tiger"><svg><use href="#i-db"/></svg><span>Under the hood</span></button>
       <button data-view="dev"><svg><use href="#i-file"/></svg><span>For developers</span></button>
-      <button data-view="demo"><svg><use href="#i-sliders"/></svg><span>Demo controls</span></button>
+      <button data-view="demo" class="owner-only"><svg><use href="#i-sliders"/></svg><span>Demo controls</span></button>
     </nav>
     <div id="account" class="account"></div>
     <div id="health" class="health"></div>
@@ -274,7 +274,7 @@
       <button data-view="porch"><svg><use href="#i-sun"/></svg>Porch heat</button>
       <button data-view="tiger"><svg><use href="#i-db"/></svg>Under the hood</button>
       <button data-view="dev"><svg><use href="#i-file"/></svg>For developers</button>
-      <button data-view="demo"><svg><use href="#i-sliders"/></svg>Demo controls</button>
+      <button data-view="demo" class="owner-only"><svg><use href="#i-sliders"/></svg>Demo controls</button>
       <button data-view="review" class="pharm-only"><svg><use href="#i-check"/></svg>Pharmacist review</button>
       <button id="signout-m"><svg><use href="#i-back"/></svg>Sign out</button>
     </div>
@@ -317,6 +317,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="/static/app.js?v=16"></script>
+<script src="/static/app.js?v=17"></script>
 </body>
 </html>

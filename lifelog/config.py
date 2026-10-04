@@ -17,6 +17,12 @@ DISABLE_BACKGROUND_TRAINING = os.getenv("DISABLE_BACKGROUND_TRAINING", "").strip
 
 # "Try the demo" sign-in buttons for judges (set ENABLE_DEMO_LOGIN=0 for a real deployment)
 ENABLE_DEMO_LOGIN = os.getenv("ENABLE_DEMO_LOGIN", "1").strip().lower() not in ("0", "false", "no")
+# Demo accounts that can also sign in with email + password (passwords only from .env, never committed)
+DEMO_ACCOUNTS = {
+    role: (os.getenv(f"DEMO_{role.upper()}_EMAIL", f"{role}@lifelog.example").strip().lower(),
+           os.getenv(f"DEMO_{role.upper()}_PASSWORD", "").strip() or None)
+    for role in ("owner", "customer", "pharmacist")
+}
 # import live DTE outage areas every 10 minutes (set LIVE_OUTAGES=0 to turn off)
 LIVE_OUTAGES = os.getenv("LIVE_OUTAGES", "1").strip().lower() not in ("0", "false", "no")
 # extra Kubra StormCenter feeds as "name:instance_id:view_id;..." (e.g. Consumers Energy, IDs from its outage map)

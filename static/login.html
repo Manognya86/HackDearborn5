@@ -7,7 +7,7 @@
 <title>Sign in · LIFELOG</title>
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="/static/style.css?v=12">
+<link rel="stylesheet" href="/static/style.css?v=13">
 </head>
 <body class="auth-page">
 <main class="auth">
@@ -30,10 +30,11 @@
 
   <div class="card" id="demo-card" hidden>
     <h2>Try the demo</h2>
-    <p class="muted small">Sample data from Dearborn, Michigan. No account needed.</p>
-    <div class="row">
-      <button class="btn primary" data-demo="patient">Patient: 4 medicines</button>
-      <button class="btn" data-demo="pharmacist">Pharmacist reviewer</button>
+    <p class="muted small">Sample data from Dearborn, Michigan. No password needed. Each account only sees its own medicines.</p>
+    <div class="demo-accounts">
+      <button class="btn primary" data-demo="owner"><b>Owner</b><span>Manu · 6 medicines, full demo controls</span></button>
+      <button class="btn" data-demo="customer"><b>Customer</b><span>Alex · 3 medicines of their own</span></button>
+      <button class="btn" data-demo="pharmacist"><b>Pharmacist</b><span>Reviews rules, wording and evidence</span></button>
     </div>
   </div>
 

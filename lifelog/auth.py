@@ -77,4 +77,6 @@ def demo_user(role: str) -> dict | None:
     with db.system():
         if role == "pharmacist":
             return db.one("SELECT id, name FROM users WHERE role = 'pharmacist' ORDER BY id LIMIT 1")
-        return db.one("SELECT id, name FROM users WHERE is_me ORDER BY id LIMIT 1")
+        if role == "customer":
+            return db.one("SELECT id, name FROM users WHERE lower(email) = %s", (config.DEMO_ACCOUNTS["customer"][0],))
+        return db.one("SELECT id, name FROM users WHERE is_me ORDER BY id LIMIT 1")   # the owner demo

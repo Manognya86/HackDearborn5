@@ -59,6 +59,22 @@ def _user(request: Request) -> dict:
     return request.state.user
 
 
+def _is_owner(u: dict | None) -> bool:
+    if not u:
+        return False
+    with db.system():
+        row = db.one("SELECT id FROM users WHERE is_me ORDER BY id LIMIT 1")
+    return bool(row) and row["id"] == u["id"]
+
+
+def _owner(request: Request) -> dict:
+    """Demo controls change everyone's demo data, so only the owner account may use them."""
+    u = request.state.user
+    if not _is_owner(u):
+        raise HTTPException(403, "Only the owner account can use the demo controls.")
+    return u
+
+
 def _pharmacist(request: Request) -> dict:
     u = request.state.user
     if not u or u["role"] != "pharmacist":
@@ -141,7 +157,7 @@ def auth_options():
 @app.get("/api/me")
 def me_(request: Request):
     u = _user(request)
-    return {**u, "items": db.one("SELECT count(*) AS n FROM items")["n"]}
+    return {**u, "owner": _is_owner(u), "items": db.one("SELECT count(*) AS n FROM items")["n"]}
 
 
 @app.get("/manifest.webmanifest")
@@ -590,7 +606,9 @@ def tiger(fresh: bool = False):
 
 # ------------------------------------------------------------------ live sensor simulator
 @app.post("/api/sim/{action}")
-def simulator(action: str):
+def simulator(action: str, request: Request):
+    if action != "status":
+        _owner(request)
     with db.system():
         return _simulator(action)
 
@@ -630,7 +648,8 @@ def item_ml_train(item_id: int):
 
 
 @app.post("/api/ml/train-all")
-def ml_train_all():
+def ml_train_all(request: Request):
+    _owner(request)
     with db.system():
         res = forecast_ml.train_all()
     services.check_alerts()
@@ -882,7 +901,8 @@ def list_products():
 
 # ------------------------------------------------------------------ demo controls
 @app.post("/api/demo/{scenario}")
-def demo(scenario: str, auto_refresh: bool = True):
+def demo(scenario: str, request: Request, auto_refresh: bool = True):
+    _owner(request)
     with db.system():
         return _demo(scenario, auto_refresh)
 

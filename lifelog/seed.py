@@ -131,7 +131,7 @@ def run(with_weather: bool = True) -> dict:
                                     VALUES (%s,%s,'fda',%s,%s) RETURNING id""",
                                  (m["product_name"], json.dumps(m), SOURCES[key]["label"], SOURCES[key]["url"])).fetchone()["id"]
 
-        users = [("You", True, False, config.HOME_LAT, config.HOME_LON)]
+        users = [("Manu (owner demo)", True, False, config.HOME_LAT, config.HOME_LON)]
         for i, n in enumerate(NAMES):
             users.append((n, False, i in (3, 9, 12), 42.295 + rng.random() * 0.045, -83.27 + rng.random() * 0.11))
         uid = []
@@ -139,12 +139,6 @@ def run(with_weather: bool = True) -> dict:
             uid.append(c.execute("""INSERT INTO users (name, is_me, can_host, lat, lon, geom)
                                     VALUES (%s,%s,%s,%s,%s, ST_SetSRID(ST_MakePoint(%s,%s),4326)) RETURNING id""",
                                  (*u, u[4], u[3])).fetchone()["id"])
-        # accounts: "You" is the demo patient; a demo pharmacist reviews rules and evidence (no password: demo button)
-        c.execute("UPDATE users SET email = 'demo.patient@lifelog.example' WHERE id = %s", (uid[0],))
-        c.execute("""INSERT INTO users (name, is_me, can_host, lat, lon, geom, email, role, credentials)
-                     VALUES ('Demo Pharmacist', FALSE, FALSE, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326),
-                             'demo.pharmacist@lifelog.example', 'pharmacist', 'PharmD (demo account)')""",
-                  (REFUGES[0][2], REFUGES[0][3], REFUGES[0][3], REFUGES[0][2]))
         for key, ev in EVIDENCE.items():
             c.execute("""INSERT INTO evidence (product_id, field, current_value, proposed_value, citation, url, finding, derivation)
                          VALUES (%s, 'above_limit_budget_hours', %s, %s, %s, %s, %s, %s)""",
@@ -224,8 +218,9 @@ def run(with_weather: bool = True) -> dict:
         db.call_refresh(c,"CALL refresh_continuous_aggregate('readings_1d', NULL, time_bucket('1 day', now()))")
     compressed = compress_history()
     doses = seed_doses(iid[3][0], iid[0][0], t_end)
+    accounts = ensure_accounts(t_end)
     check_alerts()
-    return {"readings": n, "doses": doses, "items": len(iid), "users": len(uid), "compressed_chunks": compressed, **porch}
+    return {"readings": n, "doses": doses, "accounts": accounts, "items": len(iid), "users": len(uid), "compressed_chunks": compressed, **porch}
 
 
 def seed_doses(victoza: int, mounjaro: int, t_end: datetime) -> int:
@@ -337,9 +332,11 @@ def scenario_storm(hours_to_restore: float = 12, indoor_temp_c: float = 32.0) ->
         last = db.one("SELECT temp_c FROM readings WHERE item_id = %s ORDER BY ts DESC LIMIT 1", (a["id"],))
         if last and last["temp_c"] > indoor_temp_c:
             continue  # already hotter than the house (e.g. the hot-car demo): keep its history
+        before = db.one("SELECT temp_c FROM readings WHERE item_id = %s AND ts < %s ORDER BY ts DESC LIMIT 1", (a["id"], t0))
         db.execute("DELETE FROM readings WHERE item_id = %s AND ts >= %s", (a["id"], t0))
-        start_t = a["model"]["target_max_c"] - 3 if a["model"]["target_max_c"] < 15 else 23
-        rate = 0.05 * rng.uniform(0.7, 1.4) if start_t < 15 else 0.12
+        # start from where the medicine really was: a fridge warms fast without power, a room drifts slowly
+        start_t = before["temp_c"] if before else (a["model"]["target_max_c"] - 3 if a["model"]["target_max_c"] < 15 else 23)
+        rate = 0.05 * rng.uniform(0.7, 1.4) if start_t < 15 else 0.02
         pts = [{"ts": t, "temp_c": round(min(indoor_temp_c, start_t + k * rate), 2)}
                for k, t in enumerate(engine.daterange(t0, t_end, timedelta(minutes=1)))]
         from . import services
@@ -446,12 +443,66 @@ def sync_reference_data() -> dict:
                               VALUES (%s, 'above_limit_budget_hours', %s, %s, %s, %s, %s, %s)""",
                            (pid, PRODUCTS[key]["above_limit_budget_hours"], ev["proposed"], ev["citation"], ev["url"],
                             ev["finding"], ev["derivation"]))
-        db.execute("""UPDATE users SET email = 'demo.patient@lifelog.example'
-                      WHERE id = (SELECT id FROM users WHERE is_me ORDER BY id LIMIT 1) AND email IS NULL
-                        AND NOT EXISTS (SELECT 1 FROM users WHERE lower(email) = 'demo.patient@lifelog.example')""")
-        if not db.one("SELECT 1 AS x FROM users WHERE role = 'pharmacist'"):
-            db.execute("""INSERT INTO users (name, is_me, can_host, lat, lon, geom, email, role, credentials)
-                          VALUES ('Demo Pharmacist', FALSE, FALSE, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326),
-                                  'demo.pharmacist@lifelog.example', 'pharmacist', 'PharmD (demo account)')""",
-                       (REFUGES[0][2], REFUGES[0][3], REFUGES[0][3], REFUGES[0][2]))
-    return {"medicines_added": added, "label_quotes_updated": updated}
+    return {"medicines_added": added, "label_quotes_updated": updated, "accounts": ensure_accounts()}
+
+
+# ------------------------------------------------------------------ demo accounts
+CUSTOMER = {"name": "Alex (customer demo)", "lat": 42.3105, "lon": -83.2140,
+            "items": [("dupixent", "Dupixent pen", "fridge", None, 240),
+                      ("humalog", "Humalog KwikPen (in use, room temperature)", "room", 10, 300),
+                      ("repatha", "Repatha SureClick", "fridge", None, 180)]}
+
+
+def ensure_accounts(t_end: datetime | None = None) -> dict:
+    """Owner, customer and pharmacist demo accounts. Email + password sign-in works when the passwords are set in
+    .env (DEMO_*_PASSWORD); a password an account already has is never overwritten. The customer gets three
+    medicines of their own with 14 days of readings, invisible to every other account."""
+    from . import auth
+    out = {}
+    t_end = t_end or datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    with db.system():
+        owner = db.one("SELECT id FROM users WHERE is_me ORDER BY id LIMIT 1")
+        for role in ("owner", "customer", "pharmacist"):
+            email, pw = config.DEMO_ACCOUNTS[role]
+            row = db.one("SELECT id, password_hash FROM users WHERE lower(email) = %s", (email,))
+            if not row and role == "owner" and owner:
+                db.execute("UPDATE users SET email = %s WHERE id = %s", (email, owner["id"]))
+                row = {"id": owner["id"], "password_hash": None}
+            if not row and role == "pharmacist":
+                row = db.one("""INSERT INTO users (name, is_me, can_host, lat, lon, geom, email, role, credentials)
+                                VALUES ('Demo Pharmacist', FALSE, FALSE, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                                        %s, 'pharmacist', 'PharmD (demo account)') RETURNING id, password_hash""",
+                             (REFUGES[0][2], REFUGES[0][3], REFUGES[0][3], REFUGES[0][2], email))
+            if not row and role == "customer":
+                row = db.one("""INSERT INTO users (name, is_me, can_host, lat, lon, geom, email, role)
+                                VALUES (%s, FALSE, FALSE, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, 'patient')
+                                RETURNING id, password_hash""",
+                             (CUSTOMER["name"], CUSTOMER["lat"], CUSTOMER["lon"], CUSTOMER["lon"], CUSTOMER["lat"], email))
+                _customer_medicines(row["id"], t_end)
+            if row and pw and not row["password_hash"]:
+                db.execute("UPDATE users SET password_hash = %s WHERE id = %s", (auth.hash_password(pw), row["id"]))
+            out[role] = {"email": email, "password_login": bool(pw)}
+    return out
+
+
+def _customer_medicines(user_id: int, t_end: datetime) -> None:
+    from . import services
+    t_start = t_end - timedelta(days=HISTORY_DAYS)
+    today = t_end.date()
+    made = []
+    for key, nick, prof, opened_days, expires_days in CUSTOMER["items"]:
+        pid = db.one("SELECT id FROM products WHERE name = %s ORDER BY id LIMIT 1", (PRODUCTS[key]["product_name"],))["id"]
+        iid = db.one("""INSERT INTO items (user_id, product_id, nickname, started_at, opened_at, expires_on)
+                        VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                     (user_id, pid, nick, t_start, t_end - timedelta(days=opened_days) if opened_days else None,
+                      today + timedelta(days=expires_days)))["id"]
+        made.append((iid, prof))
+    with db.conn() as c, c.cursor() as cur, cur.copy("COPY readings (ts, item_id, temp_c, source) FROM STDIN") as cp:
+        for iid, prof in made:
+            for t in engine.daterange(t_start, t_end, timedelta(minutes=2)):
+                cp.write_row((t, iid, room(t) if prof == "room" else fridge(t), "sensor"))
+    db.refresh_readings(t_start, t_end)
+    detroit = timezone(timedelta(hours=-4))
+    humalog = made[1][0]
+    for back in range(9, 0, -1):   # mealtime insulin: a dose every evening since the pen was opened
+        services.log_dose(humalog, (t_end - timedelta(days=back)).astimezone(detroit).replace(hour=18, minute=30), None)
