@@ -347,6 +347,11 @@ through Windows Firewall on private networks, and keep the phone on the same Wi-
 when phones can't reach it. Some campus and guest networks block device-to-device traffic: then use a phone hotspot or
 a tunnel and set `PUBLIC_URL`.
 
+**Any phone, any network: `scripts/run_public.py`.** Starts a Cloudflare quick tunnel (no account needed) and the app
+together, sets `PUBLIC_URL` to the tunnel's `https://….trycloudflare.com` address, and prints it. Needs `cloudflared`
+on PATH, in `tools/cloudflared.exe` next to the repo, or at `CLOUDFLARED=<path>`. The address changes on every start,
+and anyone who has it can open the app while it runs, so stop it (Ctrl+C) after the demo.
+
 ### Checked against Tiger Data's docs
 - **Columnstore (hypercore)** is the current compression API: `enable_columnstore` + `segmentby`/`orderby`,
   `add_columnstore_policy`, `convert_to_columnstore`. `add_compression_policy` is deprecated since TimescaleDB 2.18;
