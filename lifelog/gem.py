@@ -22,11 +22,17 @@ def client() -> genai.Client:
     global _client
     if config.GEMINI_DISABLED:
         raise GeminiUnavailable("Gemini is switched off on this server (GEMINI_DISABLED=1).")
-    if not config.GEMINI_API_KEY:
+    if not config.gemini_configured():
         raise GeminiUnavailable("GEMINI_API_KEY is not set in .env")
     if _client is None:
-        _client = genai.Client(api_key=config.GEMINI_API_KEY,
-                               http_options=types.HttpOptions(timeout=int(config.GEMINI_TIMEOUT_S * 1000)))
+        http = types.HttpOptions(timeout=int(config.GEMINI_TIMEOUT_S * 1000))
+        if config.GEMINI_USE_VERTEX and config.GOOGLE_CLOUD_PROJECT:   # Vertex AI, project credentials
+            _client = genai.Client(vertexai=True, project=config.GOOGLE_CLOUD_PROJECT,
+                                   location=config.GOOGLE_CLOUD_LOCATION, http_options=http)
+        elif config.GEMINI_USE_VERTEX:                                  # Vertex AI, API key (express mode)
+            _client = genai.Client(vertexai=True, api_key=config.GEMINI_API_KEY, http_options=http)
+        else:
+            _client = genai.Client(api_key=config.GEMINI_API_KEY, http_options=http)
     return _client
 
 

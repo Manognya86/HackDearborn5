@@ -190,7 +190,7 @@ def _llm_state(d: dict) -> dict:
 @app.get("/api/health")
 def health():
     """Liveness for the demo and the host: database, TimescaleDB, background jobs, LISTEN thread. No secrets."""
-    out = {"gemini": bool(config.GEMINI_API_KEY) and not config.GEMINI_DISABLED, "model": config.GEMINI_MODEL, "database": False, **realtime.status()}
+    out = {"gemini": config.gemini_configured() and not config.GEMINI_DISABLED, "model": config.GEMINI_MODEL, "database": False, **realtime.status()}
     try:
         out["extensions"] = {r["extname"]: r["extversion"] for r in
                              db.query("SELECT extname, extversion FROM pg_extension")}

@@ -772,11 +772,12 @@ def review_queue() -> list[dict]:
     """Every product with its rules, a sample of the care checklist patients see, evidence and last review."""
     out = []
     for p in db.query("SELECT id, name, model, source, source_label, source_url FROM products ORDER BY name"):
-        sample = db.one("SELECT i.* FROM items i WHERE i.product_id = %s ORDER BY i.id LIMIT 1", (p["id"],))
-        checklist = []
-        if sample:
-            state = {"zone": "Labeled storage", "remaining": 1.0, "stale_minutes": 0}
-            checklist = [c["text"] for c in precautions({**sample, "model": p["model"]}, state, [], []) if c["level"] == "info"]
+        # the label-derived checklist doesn't depend on whose medicine it is: a medicine nobody uses yet (e.g. one
+        # added by scripts/migrate.py) gets a blank sample instead of an empty checklist
+        sample = db.one("SELECT i.* FROM items i WHERE i.product_id = %s ORDER BY i.id LIMIT 1", (p["id"],)) or \
+            {"id": None, "user_id": None, "product_id": p["id"], "opened_at": None, "expires_on": None, "lot": None}
+        state = {"zone": "Labeled storage", "remaining": 1.0, "stale_minutes": 0}
+        checklist = [c["text"] for c in precautions({**sample, "model": p["model"]}, state, [], []) if c["level"] == "info"]
         out.append({**p, "checklist": checklist, "evidence": evidence_for(p["id"]), "review": review_status(p["id"]),
                     "history": audit_history(p["id"], 10)})
     return out
