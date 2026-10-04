@@ -519,7 +519,7 @@ $("#name-form").addEventListener("submit", (e) => {
   e.preventDefault();
   busy(e.submitter, async () => {
     const r = await post("/api/products/lookup", { name: $("#med-name").value });
-    renderModel(r.model, {
+    renderModel(r.model, { verification: r.verification,
       tag: r.method === "openfda" ? "From the official FDA label (openFDA), read by Gemini"
         : r.method === "openfda_rules" ? "From the official FDA label (openFDA), read by LIFELOG's rules (no AI): check every number"
         : "Found by Gemini web search (Google Search grounding)",
@@ -528,11 +528,22 @@ $("#name-form").addEventListener("submit", (e) => {
   });
 });
 
+// how much of an extracted medicine was found word-for-word in the label it came from
+function verifyBox(v) {
+  if (!v) return `<div class="banner warn small">Read from a photo: there is no label text to check the quotes against. Compare every number with the box before tracking.</div>`;
+  const total = v.verified.length + v.unverified.length;
+  if (v.all_verified) return `<div class="banner ok small">${icon("check")} All ${total} quotes were found word-for-word in the FDA label, and every allowance's temperature and day count matches its quote.</div>`;
+  return `<div class="banner warn small"><b>Check before tracking:</b> ${v.verified.length} of ${total} quotes were found word-for-word in the label.
+    <ul>${v.unverified.map((u) => `<li>${esc(u.field)}: "${esc(u.quote.slice(0, 140))}" is not in the label text</li>`).join("")}
+    ${v.number_issues.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></div>`;
+}
+
 function renderModel(m, meta) {
     $("#label-result").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}${esc(meta.tag)}</div>${meta.notice ? `<p class="muted small">${esc(meta.notice)}</p>` : ""}
       ${meta.source_url ? `<p class="source">${icon("file")}<a href="${esc(meta.source_url)}" target="_blank" rel="noopener">${esc(meta.source_label)}</a></p>` : ""}
       ${(meta.sources || []).length > 1 ? `<p class="muted small">Other sources: ${meta.sources.slice(1, 4).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a>`).join(" · ")}</p>` : ""}
       ${meta.label_text ? `<details class="fold"><summary>Label text it read <span class="muted">check this matches your medicine</span></summary><div class="label-text">${esc(meta.label_text)}</div></details>` : ""}
+      ${verifyBox(meta.verification)}
       <h3>${esc(m.product_name)} <span class="muted small">${esc(m.form)}</span></h3>
       <p>Store at <b>${m.target_min_c}–${m.target_max_c}°C</b></p><blockquote>${esc(m.target_quote)}</blockquote>
       ${m.bands.map((b) => `<p><b>${esc(b.label)}</b>: ${b.min_c}–${b.max_c}°C for up to ${hrs(b.budget_hours)}</p><blockquote>${esc(b.quote)}</blockquote>`).join("")}
@@ -542,7 +553,9 @@ function renderModel(m, meta) {
       ${m.discard_rules.length ? `<p>Throw away:</p><ul>${m.discard_rules.map((v) => `<li>${esc(v)}</li>`).join("")}</ul>` : ""}
       <details class="fold"><summary>Edit the raw rules (JSON)</summary><textarea id="model-json" rows="12">${esc(JSON.stringify(m, null, 2))}</textarea></details>
       <label class="field">Give it a name <input type="text" id="nick" value="${esc(m.product_name)}"></label>
-      <button id="save-model" class="btn primary">Start tracking</button></div>`;
+      ${meta.verification && !meta.verification.all_verified ? `<label class="small"><input type="checkbox" id="checked-label"> I compared the flagged items with the label myself</label>` : ""}
+      <button id="save-model" class="btn primary" ${meta.verification && !meta.verification.all_verified ? "disabled" : ""}>Start tracking</button></div>`;
+    $("#checked-label")?.addEventListener("change", (e) => { $("#save-model").disabled = !e.target.checked; });
     $("#save-model").onclick = (ev) => busy(ev.currentTarget, async () => {
       let model;
       try { model = JSON.parse($("#model-json").value); } catch { throw new Error("The JSON has a typo. Fix it or reload the label."); }

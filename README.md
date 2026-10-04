@@ -191,29 +191,52 @@ This is a decision-support prototype, not medical advice.
   `ALLOW_DEMO_RESET=1`. The button also asks for confirmation.
 
 ## Medicines and where their rules come from
-Every seeded product quotes Section 16 ("How Supplied / Storage and Handling") of its FDA prescribing information,
-retrieved through [openFDA](https://open.fda.gov/apis/drug/label/). Each links to its DailyMed page in the app.
+22 medicines are seeded, each from its manufacturer's FDA prescribing information, retrieved through
+[openFDA](https://open.fda.gov/apis/drug/label/) and linked to its DailyMed page in the app. The rules live in
+`lifelog/medicines.py`; the label text they were taken from is saved in `data/labels/`.
 
-| Medicine | Labeled storage | Allowance outside it (verbatim on label) |
-|---|---|---|
-| Lantus SoloStar (insulin glargine) | 2–8°C | up to 30°C, 28 days |
-| NovoLog FlexPen (insulin aspart) | 2–8°C | up to 30°C, 28 days |
-| Tresiba FlexTouch (insulin degludec) | 2–8°C | up to 30°C, 56 days |
-| Mounjaro single-dose pen (tirzepatide) | 2–8°C | up to 30°C, 21 days total |
-| Trulicity pen (dulaglutide) | 2–8°C | up to 30°C, 14 days total |
-| Victoza pen, in use (liraglutide) | 2–8°C | 15–30°C, 30 days |
-| Enbrel SureClick (etanercept) | 2–8°C | 20–25°C, one period of 30 days |
-| EpiPen (epinephrine) | 20–25°C | excursions 15–30°C (no time limit given) |
-| Xalatan, opened (latanoprost) | 2–8°C | up to 25°C for 6 weeks; up to 40°C for 8 days |
+**How we keep it accurate.** Words in quotation marks must appear word-for-word in the label, and each allowance's
+temperature and number of days must appear in its own quote. `tests/test_labels.py` checks all 22 medicines
+(and that the checker catches a changed word or number); `scripts/verify_labels.py` re-downloads the labels and
+reports any manufacturer update. LIFELOG's own interpretations are kept outside the quotes, in `notes`, and flagged.
 
-Calendar limits apply on top of the life budget: the printed expiration date and the label's in-use period after
-opening (Lantus and NovoLog 28 days, Tresiba 56, Victoza 30, Xalatan 6 weeks). Either one turns the status to
-"Do not use" no matter how cold the medicine was kept.
+| Medicine | Labeled storage | Allowance outside it (from the label) | In-use limit |
+|---|---|---|---|
+| Lantus SoloStar (insulin glargine) | 2–8°C | up to 30°C, 28 days | 28 days |
+| NovoLog FlexPen (insulin aspart) | 2–8°C | up to 30°C, 28 days | 28 days |
+| Tresiba FlexTouch (insulin degludec) | 2–8°C | up to 30°C, 56 days | 56 days |
+| Humalog KwikPen (insulin lispro) | 2–8°C | up to 30°C, 28 days | 28 days |
+| Toujeo SoloStar, in use (insulin glargine U-300) | 2–8°C unopened | up to 30°C, 56 days (in use) | 56 days |
+| Mounjaro pen (tirzepatide) | 2–8°C | up to 30°C, 21 days total | |
+| Zepbound pen (tirzepatide) | 2–8°C | up to 30°C, 21 days total | |
+| Trulicity pen (dulaglutide) | 2–8°C | up to 30°C, 14 days total | |
+| Victoza pen, in use (liraglutide) | 2–8°C | 15–30°C, 30 days | 30 days |
+| Enbrel SureClick (etanercept) | 2–8°C | 20–25°C, one period of 30 days | |
+| Humira Pen (adalimumab) | 2–8°C | up to 25°C, 14 days | |
+| Dupixent pen (dupilumab) | 2–8°C | up to 25°C, 14 days | |
+| Stelara syringe (ustekinumab) | 2–8°C | up to 30°C, one period of 30 days | |
+| Repatha SureClick (evolocumab) | 2–8°C | 20–25°C, 30 days | |
+| Praluent pen (alirocumab) | 2–8°C | up to 25°C, 30 days | |
+| Aimovig SureClick (erenumab) | 2–8°C | up to 25°C, 7 days | |
+| Emgality pen (galcanezumab) | 2–8°C | up to 30°C, 7 days | |
+| Prolia syringe (denosumab) | 2–8°C | up to 25°C, 30 days | |
+| Forteo pen (teriparatide) | 2–8°C at all times | none: "minimize the time out of the refrigerator" | 28 days |
+| EpiPen (epinephrine) | 20–25°C | excursions 15–30°C (no time limit given) | |
+| Gvoke HypoPen (glucagon) | 20–25°C | excursions 15–30°C (no time limit given) | |
+| Xalatan, opened (latanoprost) | 2–8°C | up to 25°C for 6 weeks; up to 40°C for 8 days in shipping | 6 weeks |
 
-Where a label is silent (time tolerated above its highest limit, EpiPen excursion length, temperatures between the
-fridge range and a stated room range) LIFELOG says so in the app and uses a flagged assumption.
-Not seeded: injectable Ozempic and Humira, because openFDA only returned repackager labels without the storage text;
+Calendar limits apply on top of the life budget: the printed expiration date and the label's in-use period. Either
+one turns the status to "Do not use" no matter how cold the medicine was kept.
+
+Where a label is silent (time tolerated above its highest limit, EpiPen and Gvoke excursion length, temperatures
+between the fridge range and a stated room range) LIFELOG says so in the app and uses a flagged assumption.
+Not seeded: injectable Ozempic and Wegovy, because openFDA currently returns only repackager or tablet labels for them;
 use "Add it by name" or a label photo.
+
+**Adding a medicine is checked the same way.** "Add by name" runs the same word-for-word check on whatever Gemini (or
+the no-AI reader) extracted and shows how many quotes were found in the label; anything not found must be confirmed
+by the person before tracking starts. The no-AI reader gets the same temperatures, allowances and freeze rule as the
+hand-checked rules for all 22 labels (tested).
 
 ### Add any medicine by name
 `POST /api/products/lookup {"name": "Trulicity"}`:

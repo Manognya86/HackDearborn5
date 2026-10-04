@@ -135,37 +135,61 @@ def parse_report(text: str) -> dict:
 
 # ------------------------------------------------------------------ label text -> stability model
 def parse_label_text(name: str, text: str) -> dict:
-    """Rule-based reading of an FDA storage section. Catches the common phrasings ('refrigerator at 2°C to 8°C',
-    'not to exceed 30°C ... for 14 days', 'Do not freeze'); anything it can't read is flagged for the person."""
-    t = text.replace("º", "°")
-    sentences = re.split(r"(?<=[.;])\s+", t)
+    """Rule-based reading of an FDA storage section, used when Gemini is unavailable. Every number is taken from
+    the same sentence it is quoted from, and every quote is a sentence copied from the label, so the add-medicine
+    check (medicines.check_model) can confirm both. Anything it can't find is left out and flagged."""
+    t = re.sub(r"\s+", " ", text.replace("º", "°").replace("\ufffd", "-"))
+    sentences = [x.strip() for x in re.split(r"(?<=[.;])\s+(?=[A-Z*•])", t) if x.strip()]
+    C = r"(-?\d+(?:\.\d+)?)\s*°\s*C"
 
-    def find(pat):
-        for s in sentences:
-            if re.search(pat, s, re.I):
-                return s.strip()
-        return None
+    def celsius(sent):
+        vals = [float(v) for v in re.findall(C, sent)]
+        vals += [float(v) for v in re.findall(r"(-?\d+(?:\.\d+)?)\s*°\s*(?:to|and|-)\s*\d+(?:\.\d+)?\s*°\s*C", sent)]
+        return vals
 
-    rng = re.search(r"(-?\d+(?:\.\d+)?)\s*°\s*C\s*(?:to|and|-|–)\s*(-?\d+(?:\.\d+)?)\s*°\s*C", t)
-    tmin, tmax = (float(rng.group(1)), float(rng.group(2))) if rng else (2.0, 8.0)
-    target_q = find(r"refrigerat|store") or "Not found in the label text"
+    def days_in(sent):
+        m = re.search(r"(\d+)\s*(?:-|\s)?days?\b", sent, re.I)
+        if m:
+            return float(m.group(1)) * 24
+        w = re.search(r"(\d+)\s*weeks?\b", sent, re.I)
+        return float(w.group(1)) * 168 if w else None
+
+    RANGE = r"(-?\d+(?:\.\d+)?)\s*°?\s*C?\s*(?:to|and|-)\s*(-?\d+(?:\.\d+)?)\s*°\s*C"
+    target = (next((s_ for s_ in sentences if re.search(r"refrigerat", s_, re.I) and re.search(RANGE, s_)), None)
+              or next((s_ for s_ in sentences if re.search(r"\bstore", s_, re.I) and re.search(RANGE, s_)), None))
+    if target:   # the first Celsius range after "refrigerat" / "store" in that sentence
+        at = (re.search(r"refrigerat", target, re.I) or re.search(r"\bstore", target, re.I)).start()
+        ranges = list(re.finditer(RANGE, target))
+        r_ = next((x for x in ranges if x.start() >= at), ranges[0])
+        tmin, tmax = sorted((float(r_.group(1)), float(r_.group(2))))
+    else:
+        tmin, tmax = 2.0, 8.0
     bands = []
-    room = re.search(r"(?:not to exceed|up to|below|under|at temperatures? (?:not exceeding|up to))\s*"
-                     r"(?:\d+\s*°\s*F\s*[(\[]\s*)?(\d+(?:\.\d+)?)\s*°\s*C", t, re.I)
-    days = re.search(r"(\d+)\s*days|(\d+)\s*weeks", t, re.I)
-    if room and float(room.group(1)) > tmax:
-        hours = (int(days.group(1)) * 24) if days and days.group(1) else (int(days.group(2)) * 168 if days else 0)
-        if hours:
-            bands.append({"label": "Room-temp allowance", "min_c": tmax, "max_c": float(room.group(1)),
-                          "budget_hours": float(hours), "quote": find(r"room temperature|unrefrigerated|not to exceed|up to") or ""})
-    freeze = bool(re.search(r"do not freeze|not be frozen|if (it has been )?frozen", t, re.I))
-    in_use = re.search(r"(\d+)\s*days after (?:first use|opening|first opening)", t, re.I)
+    for s_ in sentences:
+        m_ = re.search(r"room temperature|unrefrigerated|out of refrigeration|removed from the refrigerator", s_, re.I)
+        if not m_:
+            continue
+        near = s_[m_.start():m_.start() + 220]   # tables flatten into one long "sentence": read next to the phrase
+        hi = max(celsius(near), default=None)
+        hours = days_in(near) or days_in(s_)
+        if hi is not None and hi > tmax and hours:
+            bands.append({"label": "Room-temp allowance", "min_c": tmax, "max_c": hi, "budget_hours": hours, "quote": s_})
+            break
+    pick = lambda pat: [s_ for s_ in sentences if re.search(pat, s_, re.I) and s_ != target][:4]
+    freeze_q = next(iter(pick(r"\bfreez|\bfrozen")), None)
+    in_use = re.search(r"(\d+)\s*days after (?:first use|opening|first opening|initial use)", t, re.I)
     return {
-        "product_name": name, "form": "unknown", "target_min_c": tmin, "target_max_c": tmax, "target_quote": target_q,
-        "freeze_discard": freeze, "freeze_c": 0.0, "freeze_quote": find(r"freez") or "Not stated on label",
-        "cold_ok": True, "bands": bands, "above_limit_budget_hours": 8.0, "above_limit_is_assumption": True,
+        "product_name": name, "form": "unknown", "target_min_c": tmin, "target_max_c": tmax,
+        "target_quote": target or "Not stated on label (LIFELOG could not find the storage temperature: enter it from the box)",
+        "freeze_discard": bool(re.search(r"do not freeze|not be frozen|if (it has been )?frozen|never be frozen|or freeze\b", t, re.I)),
+        "freeze_c": 0.0, "freeze_quote": freeze_q or "Not stated on label",
+        "cold_ok": not re.search(r"do not refrigerate", t, re.I), "bands": bands,
+        "above_limit_budget_hours": 8.0, "above_limit_is_assumption": True,
         "above_limit_quote": "Not stated on label (LIFELOG conservative default: 8 h above the highest labeled limit, doubling per 10°C)",
-        "in_use_days": float(in_use.group(1)) if in_use else 0.0, "visual_checks": [], "discard_rules": [],
-        "notes": "Read by LIFELOG's rule-based parser because Gemini was unavailable. Check every number against the label text.",
+        "in_use_days": float(in_use.group(1)) if in_use else 0.0,
+        "visual_checks": pick(r"clear and colorless|discolou?red|cloudy|particles"),
+        "discard_rules": pick(r"\bdiscard|throw away|do not shake|protect .{0,40}from (?:direct )?(?:light|heat)"),
+        "notes": "Read by LIFELOG's rule-based parser because Gemini was unavailable. Check every number against the label text."
+                 + ("" if target else " The storage temperature was not found; 2–8°C is only a placeholder."),
         "ai": False,
     }

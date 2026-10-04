@@ -8,7 +8,7 @@ from starlette.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import assistant, auth, config, db, engine, forecast_ml, gem, offline, realtime, seed, services, sim
+from . import assistant, auth, config, db, engine, forecast_ml, gem, medicines, offline, realtime, seed, services, sim
 from .models import StabilityModel
 
 app = FastAPI(title="LIFELOG Home")
@@ -438,7 +438,9 @@ def lookup(body: LookupIn):
             model, method, notice = offline.parse_label_text(name, hit["text"]), "openfda_rules", _fallback_note(e)
         return {"model": model, "method": method, "notice": notice, "source_label": hit["source_label"],
                 "source_url": hit["source_url"], "sources": [{"title": hit["source_label"], "url": hit["source_url"]}],
-                "label_text": hit["text"][:1500]}
+                "label_text": hit["text"][:1500],
+                # every quote checked word-for-word against the label text it came from, and every number against its quote
+                "verification": medicines.check_model(model, hit["text"])}
     try:
         found = gem.search_label(body.name)
     except gem.GeminiUnavailable as e:
@@ -449,7 +451,8 @@ def lookup(body: LookupIn):
     model = gem.extract_label_text(body.name, found["text"])
     first = found["sources"][0] if found["sources"] else {"title": "Google Search", "url": None}
     return {"model": model, "method": "google_search", "source_label": f"{first['title']} (found by Gemini web search)",
-            "source_url": first["url"], "sources": found["sources"], "label_text": found["text"][:1500]}
+            "source_url": first["url"], "sources": found["sources"], "label_text": found["text"][:1500],
+            "verification": medicines.check_model(model, found["text"])}
 
 
 class NewItem(BaseModel):

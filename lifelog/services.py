@@ -497,7 +497,8 @@ def openfda_lookup(name: str) -> dict | None:
             text = re.sub(r"\s+", " ", text)
             if len(text) < 200 or not re.search(r"refrigerat|store (at|between|in)|°C", text, re.I):
                 continue
-            start = max(text.lower().find("storage"), 0)
+            # keep the whole section when it fits; a long one starts a little before the word "storage"
+            start = 0 if len(text) <= 6000 else max(text.lower().find("storage") - 300, 0)
             ofda = lab.get("openfda", {})
             eff = lab.get("effective_time", "")
             return {
