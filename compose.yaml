@@ -1,0 +1,13 @@
+# LIFELOG web app on Docker Desktop:  docker compose up -d --build   ->  http://localhost:8000
+# Secrets come from .env at run time (never baked into the image). The database is Tiger Cloud (DATABASE_URL).
+services:
+  lifelog:
+    build: .
+    image: lifelog
+    container_name: lifelog
+    env_file: .env
+    environment:
+      GEMINI_TIMEOUT_S: "60"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
