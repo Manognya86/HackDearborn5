@@ -1,4 +1,5 @@
 """Business logic on top of Tiger Data. SQL does the heavy lifting; Python shapes results."""
+import json
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -555,6 +556,120 @@ def recalls(brand: str, lot: str | None = None) -> dict:
             "active_lot_match": any(x["lot_match"] and x["status"] == "Ongoing" for x in out)}
 
 
+# ------------------------------------------------------------------ verifiable exposure receipts
+def _snapshot(item_id: int, as_of) -> dict:
+    """Everything a pharmacist needs to trust, up to `as_of`, in a form that doesn't change unless the
+    underlying readings do: per-day time and budget used outside labeled storage, total used, reading count."""
+    days = db.query("""
+        SELECT to_char(date_trunc('day', bucket), 'YYYY-MM-DD') AS day, zone, count(*) * 5 AS minutes,
+               round(sum(burn)::numeric, 6)::float8 AS burn, round(max(max_temp)::numeric, 2)::float8 AS peak_c
+        FROM item_timeline(%s) WHERE bucket < %s AND zone <> 'Labeled storage'
+        GROUP BY 1, 2 HAVING sum(burn) >= 0.0005 ORDER BY 1, 2""", (item_id, as_of))  # skip door-opening blips
+    used = db.one("SELECT used FROM item_timeline(%s) WHERE bucket < %s ORDER BY bucket DESC LIMIT 1", (item_id, as_of))
+    n = db.one("SELECT count(*) AS n FROM readings WHERE item_id = %s AND ts < %s", (item_id, as_of))["n"]
+    return {"used": round(used["used"], 6) if used else 0.0, "readings": n, "exposure_days": days}
+
+
+def _digest(item: dict, as_of, snap: dict) -> str:
+    import hashlib
+    import json as _json
+    body = {"item_id": item["id"], "product": item["product_name"], "lot": item.get("lot"),
+            "as_of": as_of.isoformat(), **snap}
+    return hashlib.sha256(_json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def create_receipt(d: dict) -> dict:
+    """Freeze the exposure record up to the last complete 5-minute bucket and store its fingerprint."""
+    item = d["item"]
+    t = now()
+    as_of = t.replace(second=0, microsecond=0) - timedelta(minutes=t.minute % 5)
+    snap = _snapshot(item["id"], as_of)
+    digest = _digest(item, as_of, snap)
+    code = digest[:4].upper() + "-" + digest[4:8].upper() + "-" + digest[8:12].upper()
+    m = item["model"]
+    payload = {"product": item["product_name"], "nickname": item["nickname"], "lot": item.get("lot"),
+               "since": item["started_at"].isoformat(), "remaining": round(1 - snap["used"], 4), **snap,
+               "label": {"target_quote": m.get("target_quote"), "bands": [b["quote"] for b in m.get("bands", [])]},
+               "source_url": item.get("source_url")}
+    db.execute("""INSERT INTO receipts (code, item_id, as_of, payload, digest) VALUES (%s,%s,%s,%s,%s)
+                  ON CONFLICT (code) DO NOTHING""", (code, item["id"], as_of, json.dumps(payload, default=str), digest))
+    return {"code": code, "as_of": as_of, "digest": digest, "url": f"/r/{code}"}
+
+
+def verify_receipt(code: str) -> dict | None:
+    r = db.one("""SELECT r.*, i.id AS iid, i.lot, p.name AS product_name FROM receipts r
+                  JOIN items i ON i.id = r.item_id JOIN products p ON p.id = i.product_id WHERE r.code = %s""",
+               (code.upper(),))
+    if not r:
+        return None
+    snap = _snapshot(r["item_id"], r["as_of"])
+    now_digest = _digest({"id": r["iid"], "product_name": r["product_name"], "lot": r["lot"]}, r["as_of"], snap)
+    same = now_digest == r["digest"]
+    why = None
+    if not same:
+        why = ("Readings for this period changed after the receipt was made: late sensor data arrived, or the record "
+               "was edited." if snap["readings"] != r["payload"]["readings"] else
+               "The calculated exposure for this period changed after the receipt was made.")
+    return {"code": r["code"], "created_at": r["created_at"], "as_of": r["as_of"], "payload": r["payload"],
+            "digest": r["digest"], "matches": same, "reason": why}
+
+
+# ------------------------------------------------------------------ developer platform
+def create_device(item_id: int, label: str | None) -> str:
+    import secrets
+    token = "llg_" + secrets.token_urlsafe(20)
+    db.execute("INSERT INTO devices (token, item_id, label) VALUES (%s, %s, %s)", (token, item_id, label))
+    return token
+
+
+def device_for(token: str) -> dict | None:
+    return db.one("SELECT * FROM devices WHERE token = %s AND NOT revoked", (token,)) if token else None
+
+
+def devices() -> list[dict]:
+    return db.query("""SELECT d.token, d.label, d.created_at, d.last_seen, d.readings, i.id AS item_id, i.nickname
+                       FROM devices d JOIN items i ON i.id = d.item_id JOIN users u ON u.id = i.user_id
+                       WHERE u.is_me AND NOT d.revoked ORDER BY d.created_at DESC""")
+
+
+def create_webhook(url: str) -> dict:
+    import secrets
+    secret = "whsec_" + secrets.token_urlsafe(24)
+    hook = db.one("INSERT INTO webhooks (url, secret) VALUES (%s, %s) RETURNING id, url, created_at", (url, secret))
+    return {**hook, "secret": secret}
+
+
+def webhooks() -> list[dict]:
+    return db.query("SELECT id, url, created_at, last_status, last_at FROM webhooks WHERE active ORDER BY id DESC")
+
+
+def deliver_webhooks(event: dict) -> None:
+    """POST an alert to every active webhook, signed with HMAC-SHA256 of the body (X-Lifelog-Signature)."""
+    import hashlib
+    import hmac
+    import json as _json
+
+    import httpx
+    hooks = db.query("SELECT id, url, secret FROM webhooks WHERE active")
+    if not hooks:
+        return
+    item = db.one("""SELECT i.nickname, p.name AS product FROM items i JOIN products p ON p.id = i.product_id
+                     WHERE i.id = %s""", (event.get("item_id"),)) or {}
+    body = _json.dumps({"type": "alert", "id": event.get("id"), "kind": event.get("kind"), "severity": event.get("severity"),
+                        "message": event.get("message"), "resolved": event.get("resolved"), "item_id": event.get("item_id"),
+                        "medicine": item.get("nickname"), "product": item.get("product"), "sent_at": now().isoformat()})
+    for h in hooks:
+        sig = hmac.new(h["secret"].encode(), body.encode(), hashlib.sha256).hexdigest()
+        try:
+            r = httpx.post(h["url"], content=body, timeout=5,
+                           headers={"Content-Type": "application/json", "X-Lifelog-Signature": f"sha256={sig}",
+                                    "X-Lifelog-Event": "alert"})
+            status = str(r.status_code)
+        except httpx.HTTPError as e:
+            status = type(e).__name__
+        db.execute("UPDATE webhooks SET last_status = %s, last_at = now() WHERE id = %s", (status, h["id"]))
+
+
 # ------------------------------------------------------------------ caregiver share links
 def create_share(user_id: int, label: str | None = None) -> str:
     import secrets
@@ -651,8 +766,12 @@ def precautions(item: dict, state: dict, gaps: list[dict], whatif: list[dict]) -
         out.append({"level": "info", "text": "Never freeze it. If it has been frozen, don't use it."})
     for v in m.get("visual_checks", []):
         out.append({"level": "info", "text": f"Before each use: {v[0].lower() + v[1:]}."})
-    for d in m.get("discard_rules", []):
-        out.append({"level": "info", "text": d.rstrip(".") + "."})
+    import re as _re
+    for rule in m.get("discard_rules", []):
+        text = rule.rstrip(".") + "."
+        if not item.get("opened_at") and _re.search(r"in-use|in use|after (first )?(use|opening)|once .*opened", rule, _re.I):
+            text = "Once you start using it: " + text[0].lower() + text[1:]
+        out.append({"level": "info", "text": text})
     out.append({"level": "info", "text": "Carry it in an insulated case when you leave home, and keep it out of direct sunlight."})
     return out
 

@@ -207,6 +207,12 @@ blockquote { margin: 6px 0; padding: 6px 12px; border-left: 3px solid var(--bran
 #qr { background: #fff; padding: 10px; border-radius: 10px; display: inline-block; margin: 10px 0; }
 .link-box { word-break: break-all; font-size: 13px; background: var(--surface-2); padding: 8px 10px; border-radius: 8px; }
 
+.ai-box .tag.offline { color: var(--ok); }
+.toast.warn { background: var(--warn); color: #fff; }
+.qr { background: #fff; padding: 8px; border-radius: 10px; display: inline-block; margin: 8px 0; }
+.dev-row { padding: 8px 0; border-bottom: 1px solid var(--border); }
+code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; background: var(--surface-2); padding: 1px 5px; border-radius: 5px; }
+
 /* alerts list */
 .alert { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; margin: 8px 0; border: 1px solid var(--border); background: var(--surface); }
 .alert svg { width: 20px; height: 20px; margin-top: 1px; }

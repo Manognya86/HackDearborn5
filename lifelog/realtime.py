@@ -55,12 +55,23 @@ def _listen_forever() -> None:
                 _listening.set()
                 for n in conn.notifies():
                     try:
-                        publish(json.loads(n.payload))
+                        ev = json.loads(n.payload)
                     except ValueError:
-                        publish({"type": "raw", "payload": n.payload})
+                        ev = {"type": "raw", "payload": n.payload}
+                    publish(ev)
+                    if ev.get("type") == "alert":
+                        threading.Thread(target=_webhooks, args=(ev,), daemon=True).start()
         except Exception:  # connection dropped: back off and reconnect
             _listening.clear()
             time.sleep(3)
+
+
+def _webhooks(ev: dict) -> None:
+    try:
+        from . import services  # imported here: services imports this module
+        services.deliver_webhooks(ev)
+    except Exception:
+        pass
 
 
 def status() -> dict:

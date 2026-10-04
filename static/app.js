@@ -36,10 +36,14 @@ try { lang = localStorage.getItem(LANG_KEY) || "en"; } catch { /* storage blocke
 const withLang = (path) => path + (path.includes("?") ? "&" : "?") + "lang=" + lang;
 const post = (path, data) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data ?? {}) });
 async function busy(btn, fn) {
-  btn.disabled = true; btn.classList.add("spin");
-  try { return await fn(); } catch (e) { toast(e.message.includes("GEMINI_API_KEY") ? "Gemini isn't set up yet: add GEMINI_API_KEY to .env" : e.message); console.error(e); }
-  finally { btn.disabled = false; btn.classList.remove("spin"); }
+  if (btn) { btn.disabled = true; btn.classList.add("spin"); }
+  try { return await fn(); } catch (e) { toast(e.message.includes("GEMINI_API_KEY") ? "Gemini isn't set up yet: add GEMINI_API_KEY to .env" : e.message, "warn"); console.error(e); }
+  finally { if (btn) { btn.disabled = false; btn.classList.remove("spin"); } }
 }
+const aiTag = (r, label) => r && r.ai === false
+  ? `<div class="tag offline">${icon("check")}From your data and the label · no AI</div>${r.notice ? `<p class="muted small">${esc(r.notice)}</p>` : ""}`
+  : `<div class="tag">${icon("spark")}${label}</div>`;
+
 
 const STATUS_COLOR = { USE: "--ok", USE_SOON: "--warn", CHECK: "--warn", ASK_PHARMACIST: "--warn", DO_NOT_USE: "--bad" };
 function ring(value, size, stroke, code, label = "") {
@@ -53,7 +57,7 @@ function ring(value, size, stroke, code, label = "") {
 
 // ------------------------------------------------------------------ navigation
 const TITLES = { meds: "My medicines", alerts: "Alerts", ask: "Ask LIFELOG", rescue: "Outage rescue", add: "Add medicine",
-  voice: "Voice report", trip: "Trip check", porch: "Porch heat", tiger: "Under the hood", demo: "Demo controls" };
+  voice: "Voice report", trip: "Trip check", porch: "Porch heat", tiger: "Under the hood", dev: "For developers", demo: "Demo controls" };
 const loaders = {};
 let currentView = "meds";
 document.addEventListener("click", (e) => {
@@ -155,9 +159,9 @@ async function openItem(id, { quiet = false } = {}) {
             <span>${s.stale_minutes > 20 ? "Last reading" : "Now"} <b>${temp(s.current_temp)}</b></span>
             <span>Allowed <b>${m.target_min_c}–${m.target_max_c}°C</b></span>
             <span>At this temperature it lasts <b>${hrs(s.hours_left)}</b></span>
-            ${d.forecast && d.forecast.trend !== "unknown" ? `<span>Trend <b class="trend ${d.forecast.minutes_to_limit != null || d.forecast.minutes_to_freeze != null ? "bad" : ""}">${esc(trendText(d.forecast))}</b></span>` : ""}
-            ${d.forecast && ["warming", "cooling"].includes(d.forecast.trend) ? `<span>At this trend it lasts <b>${hrs(d.forecast.hours_left)}</b></span>` : ""}
-            <span>Used in the last hour <b>${d.burn_last_hour > 0.00005 ? pct(d.burn_last_hour, 2) : "none"}</b></span>
+            ${s.stale_minutes <= 20 && d.forecast && d.forecast.trend !== "unknown" ? `<span>Trend <b class="trend ${d.forecast.minutes_to_limit != null || d.forecast.minutes_to_freeze != null ? "bad" : ""}">${esc(trendText(d.forecast))}</b></span>` : ""}
+            ${s.stale_minutes <= 20 && d.forecast && ["warming", "cooling"].includes(d.forecast.trend) ? `<span>At this trend it lasts <b>${hrs(d.forecast.hours_left)}</b></span>` : ""}
+            ${s.stale_minutes <= 20 ? `<span>Used in the last hour <b>${d.burn_last_hour > 0.00005 ? pct(d.burn_last_hour, 2) : "none"}</b></span>` : ""}
             ${d.dates.use_by ? `<span>Use by <b>${new Date(d.dates.use_by_date + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</b> <span class="muted">(${esc(d.dates.use_by_reason)})</span></span>` : ""}
             <button class="btn" id="dates-btn" style="min-height:30px;padding:3px 10px;font-size:13px">Dates &amp; lot</button>
           </div>
@@ -174,9 +178,11 @@ async function openItem(id, { quiet = false } = {}) {
       ${top ? `<div class="todo ${top.level}">${icon("alert")}<div><b>Do this now</b><span>${esc(top.text)}</span></div></div>`
         : `<div class="todo ok">${icon("check")}<div><b>Nothing to do</b><span>Keep storing it the way you are.</span></div></div>`}
       <div class="actions">
-        <button class="btn ai" id="advice-btn">${icon("spark")}Ask Gemini: safe to use?</button>
-        <label class="btn" for="photo">${icon("camera")}Photo check</label><input type="file" id="photo" accept="image/*" capture="environment" hidden>
+        <button class="btn ai" id="advice-btn">${icon("spark")}Is it safe to use?</button>
+        <label class="btn" for="photo" title="Needs Gemini">${icon("camera")}Photo check</label><input type="file" id="photo" accept="image/*" capture="environment" hidden>
         <button class="btn" id="letter-btn">${icon("file")}Refill letter</button>
+        <button class="btn" id="receipt-btn" title="A verifiable record a pharmacist can check">${icon("check")}Exposure receipt</button>
+        ${"bluetooth" in navigator ? `<button class="btn" id="ble-btn" title="Bluetooth thermometer (Health Thermometer or Environmental Sensing)">${icon("bolt")}Connect sensor</button>` : ""}
         <a class="btn" href="/api/items/${id}/export.csv">${icon("download")}Export log</a>
         <button class="btn" onclick="window.print()">${icon("print")}Print</button>
       </div>
@@ -208,6 +214,7 @@ async function openItem(id, { quiet = false } = {}) {
       </details>
       <details class="fold" data-k="whatif" ${openFolds.includes("whatif") ? "open" : ""}>
         <summary>What if you act now? <span class="muted">budget left after 12 hours</span></summary>
+        ${s.zone === "Labeled storage" ? `<p class="small">${icon("check")} It's already in its labeled storage, so there's nothing to change. The table shows what moving it would cost.</p>` : ""}
         <div class="table-wrap"><table><tr><th>If you…</th><th class="num">Temp</th><th class="num">After 12 h</th><th class="num">Lasts</th></tr>
         ${d.whatif.map((w, i) => `<tr class="${i === 0 && w.preserved_vs_now > 0 ? "best" : ""}"><td>${esc(w.option)}</td><td class="num">${temp(w.temp_c)}</td><td class="num">${pct(w.remaining_after)}</td><td class="num">${hrs(w.hours_left)}</td></tr>`).join("")}</table></div>
       </details>
@@ -277,15 +284,26 @@ async function openItem(id, { quiet = false } = {}) {
   };
   $("#letter-btn").onclick = (e) => busy(e.currentTarget, async () => {
     const r = await post(withLang(`/api/items/${id}/letter`));
-    $("#ai-box").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Refill / replacement letter</div><pre class="log">${esc(r.letter)}</pre>
-      <button class="btn" id="copy-letter">Copy</button></div>`;
+    $("#ai-box").innerHTML = `<div class="ai-box">${aiTag(r, "Refill / replacement letter (Gemini)")}<pre class="log">${esc(r.letter.replace("/r/" + (r.receipt?.code || "x"), location.origin + "/r/" + (r.receipt?.code || "x")))}</pre>
+      <div class="row"><button class="btn" id="copy-letter">Copy</button>${r.receipt ? `<a class="btn" href="/r/${esc(r.receipt.code)}" target="_blank">Open receipt ${esc(r.receipt.code)}</a>` : ""}</div></div>`;
     $("#copy-letter").onclick = () => navigator.clipboard.writeText(r.letter).then(() => toast("Copied"));
   });
+  $("#receipt-btn").onclick = (e) => busy(e.currentTarget, async () => {
+    const rc = await post(`/api/items/${id}/receipt`);
+    const url = `${location.origin}/r/${rc.code}`;
+    $("#ai-box").innerHTML = `<div class="ai-box"><div class="tag">${icon("check")}Exposure receipt ${esc(rc.code)}</div>
+      <p class="small">A frozen, fingerprinted copy of this medicine's exposure record up to ${fmt(rc.as_of)}. A pharmacist or insurer can scan it to see the record and whether the data still matches.</p>
+      <div id="rc-qr" class="qr"></div><div class="link-box">${esc(url)}</div>
+      <div class="row"><button class="btn primary" id="rc-copy">Copy link</button><a class="btn" href="/r/${esc(rc.code)}" target="_blank">Open</a></div></div>`;
+    if (window.QRCode) new QRCode($("#rc-qr"), { text: url, width: 150, height: 150 });
+    $("#rc-copy").onclick = () => navigator.clipboard.writeText(url).then(() => toast("Copied"));
+  });
+  $("#ble-btn")?.addEventListener("click", () => connectBle(id));
   if (!quiet) { setDetailOpen(true); if (isMobile()) window.scrollTo(0, 0); }
 }
 
 function renderVerdict(v) {
-  $("#ai-box").innerHTML = `<div class="ai-box" dir="auto"><div class="tag">${icon("spark")}Gemini · based on your data and the label</div>
+  $("#ai-box").innerHTML = `<div class="ai-box" dir="auto">${aiTag(v, "Gemini · based on your data and the label")}
     <div class="verdict ${esc(v.verdict)}">${esc(v.headline)}</div><p>${esc(v.explanation)}</p>
     <ul>${v.actions.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>${v.cited_quotes.map((q) => `<blockquote>${esc(q)}</blockquote>`).join("")}</div>`;
 }
@@ -341,11 +359,14 @@ async function loadAccuracy(id) {
     </table></div>
     <p class="small muted">${Math.abs(a.averaging_error) < 0.00005 ? "Averaging each 5 minutes first would give the same answer here." : `Averaging each 5 minutes first would ${a.averaging_error > 0 ? "overstate" : "understate"} the budget by ${pct(Math.abs(a.averaging_error), 2)}.`} LIFELOG scores every reading instead: damage jumps at the label's limits and grows exponentially above them, so an average hides short spikes and smears readings that straddle a limit.</p>
     <h3>What the answer depends on</h3>
-    ${a.assumption_on_label ? `<p>The heat tolerance comes from the label itself.</p>` : `<p>The label doesn't say how long it tolerates heat above its limit; LIFELOG assumes <b>8 hours</b>. Here is how the answer would change:</p>`}
+    ${a.assumption_on_label ? `<p>The heat tolerance comes from the label itself.</p>`
+      : new Set(sens.map((x) => Math.round(x.remaining * 100))).size === 1
+        ? `<p>The label doesn't say how long it tolerates heat above its limit (LIFELOG assumes 8 hours), but that doesn't matter here: this medicine has never been above its labeled limit.</p>`
+        : `<p>The label doesn't say how long it tolerates heat above its limit; LIFELOG assumes <b>8 hours</b>. Here is how the answer would change:</p>`}
     <div class="table-wrap"><table><tr><th>If the tolerance were</th>${sens.map((x) => `<th class="num">${x.above_limit_budget_hours} h</th>`).join("")}</tr>
       <tr><td>Budget left</td>${sens.map((x) => `<td class="num">${pct(x.remaining)}</td>`).join("")}</tr></table></div>
     <h3>Data quality</h3>
-    <p class="small">${(+a.ingest.accepted).toLocaleString()} readings accepted through the ingest API · <b>${a.ingest.rejected}</b> rejected (impossible values or duplicates) · <b>${a.ingest.flagged}</b> flagged as sudden jumps · ${a.ingest.late_batches} late batch${a.ingest.late_batches == 1 ? "" : "es"} repaired.
+    <p class="small">${a.readings.toLocaleString()} readings on record, ${(+a.ingest.accepted).toLocaleString()} of them sent live through the ingest API · <b>${a.ingest.rejected}</b> rejected (impossible values or duplicates) · <b>${a.ingest.flagged}</b> flagged as sudden jumps · ${a.ingest.late_batches} late batch${a.ingest.late_batches == 1 ? "" : "es"} repaired.
     ${a.gaps.length ? `${a.gaps.length} gap${a.gaps.length === 1 ? "" : "s"} in the data (${hrs(a.gaps.reduce((s, g) => s + g.hours, 0))}), worst case ${pct(a.worst_case)}.` : "No gaps in the data."}</p>`;
 }
 
@@ -403,14 +424,16 @@ $("#name-form").addEventListener("submit", (e) => {
   busy(e.submitter, async () => {
     const r = await post("/api/products/lookup", { name: $("#med-name").value });
     renderModel(r.model, {
-      tag: r.method === "openfda" ? "From the official FDA label (openFDA), read by Gemini" : "Found by Gemini web search (Google Search grounding)",
-      source_label: r.source_label, source_url: r.source_url, sources: r.sources, label_text: r.label_text,
+      tag: r.method === "openfda" ? "From the official FDA label (openFDA), read by Gemini"
+        : r.method === "openfda_rules" ? "From the official FDA label (openFDA), read by LIFELOG's rules (no AI): check every number"
+        : "Found by Gemini web search (Google Search grounding)",
+      source_label: r.source_label, source_url: r.source_url, sources: r.sources, label_text: r.label_text, notice: r.notice,
     });
   });
 });
 
 function renderModel(m, meta) {
-    $("#label-result").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}${esc(meta.tag)}</div>
+    $("#label-result").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}${esc(meta.tag)}</div>${meta.notice ? `<p class="muted small">${esc(meta.notice)}</p>` : ""}
       ${meta.source_url ? `<p class="source">${icon("file")}<a href="${esc(meta.source_url)}" target="_blank" rel="noopener">${esc(meta.source_label)}</a></p>` : ""}
       ${(meta.sources || []).length > 1 ? `<p class="muted small">Other sources: ${meta.sources.slice(1, 4).map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a>`).join(" · ")}</p>` : ""}
       ${meta.label_text ? `<details class="fold"><summary>Label text it read <span class="muted">check this matches your medicine</span></summary><div class="label-text">${esc(meta.label_text)}</div></details>` : ""}
@@ -450,7 +473,7 @@ async function sendVoice(blob) {
   if (blob) fd.append("audio", blob, "report.wav"); else fd.append("text", $("#voice-text").value);
   await busy($("#voice-send"), async () => {
     const r = await api("/api/voice", { method: "POST", body: fd });
-    $("#voice-result").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Gemini heard</div><p>"${esc(r.report.transcript)}"</p>
+    $("#voice-result").innerHTML = `<div class="ai-box">${aiTag(r.report, "Gemini heard")}<p>"${esc(r.report.transcript)}"</p>
       <div class="table-wrap"><table><tr><th>What happened</th><th class="num">When</th><th class="num">How long</th><th class="num">About</th></tr>
       ${r.report.events.map((e) => `<tr><td>${esc(e.summary)}</td><td class="num">${e.minutes_ago_start.toFixed(0)} min ago</td><td class="num">${e.duration_minutes.toFixed(0)} min</td><td class="num">${temp(e.estimated_temp_c)}</td></tr>`).join("")}</table></div>
       <p class="muted small">${r.ingest.inserted} readings added for "${esc(r.item)}".</p>
@@ -505,6 +528,8 @@ loaders.rescue = async () => {
   r.refuges.forEach((f) => L.marker([f.lat, f.lon], { title: f.name }).bindPopup(`<b>${esc(f.name)}</b><br>has power and a fridge`).addTo(rescueLayer));
   const out = r.outages.features[0]?.properties;
   const atRisk = r.people.filter((p) => p.at_risk);
+  $("#plan-btn").hidden = !r.outages.features.length;
+  if (!r.outages.features.length) $("#rescue-plan").innerHTML = "";
   $("#rescue-list").innerHTML = !r.people.length ? `<div class="banner ok">No power outage right now.</div><p class="muted small">During an outage, this page ranks neighbors by how long their medicines will last versus when power returns.</p>` : `
     <div class="banner bad"><b>${esc(out?.name || "Power outage")}</b>: power back in about ${hrs(r.people[0].hours_to_restore)}, homes around ${temp(out?.indoor_temp_c)}. <b>${atRisk.length}</b> medicine${atRisk.length === 1 ? "" : "s"} will run out first.</div>
     <div class="table-wrap"><table><tr><th>Person</th><th>Medicine</th><th class="num">Lasts</th><th>Go to</th></tr>
@@ -513,7 +538,7 @@ loaders.rescue = async () => {
 };
 $("#plan-btn").addEventListener("click", (e) => busy(e.currentTarget, async () => {
   const r = await post(withLang("/api/rescue/plan"));
-  $("#rescue-plan").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Gemini dispatch plan</div>${md(r.plan)}</div>`;
+  $("#rescue-plan").innerHTML = `<div class="ai-box">${aiTag(r, "Gemini dispatch plan")}${md(r.plan)}</div>`;
 }));
 
 // ------------------------------------------------------------------ trip
@@ -551,7 +576,7 @@ loaders.porch = async () => {
 };
 $("#brief-btn").addEventListener("click", (e) => busy(e.currentTarget, async () => {
   const r = await post("/api/porch/brief");
-  $("#porch-brief").innerHTML = `<div class="ai-box"><div class="tag">${icon("spark")}Gemini pharmacy brief</div>${md(r.brief)}</div>`;
+  $("#porch-brief").innerHTML = `<div class="ai-box">${aiTag(r, "Gemini pharmacy brief")}${md(r.brief)}</div>`;
 }));
 
 // ------------------------------------------------------------------ caregiver sharing
@@ -593,6 +618,75 @@ async function systemNotify(a) {
   const reg = swReg || (await navigator.serviceWorker?.ready.catch(() => null));
   const opts = { body: a.message, icon: "/static/icon.svg", badge: "/static/icon.svg", tag: `alert-${a.item_id}-${a.kind}` };
   try { reg ? await reg.showNotification("LIFELOG", opts) : new Notification("LIFELOG", opts); } catch { /* unsupported */ }
+}
+
+// ------------------------------------------------------------------ for developers
+loaders.dev = async () => {
+  const [devs, hooks, items] = await Promise.all([api("/api/devices"), api("/api/webhooks"), api("/api/items")]);
+  $("#dev-item").innerHTML = items.map((i) => `<option value="${i.id}">${esc(i.nickname)}</option>`).join("");
+  $("#dev-devices").innerHTML = devs.map((d) => `<div class="row between dev-row"><div><b>${esc(d.label || "Sensor")}</b> → ${esc(d.nickname)}
+      <div class="muted small"><code>${esc(d.token.slice(0, 10))}…</code> · ${d.readings} readings · ${d.last_seen ? "last seen " + fmt(d.last_seen) : "never used"}</div></div>
+      <button class="btn" data-revoke-dev="${esc(d.token)}">Revoke</button></div>`).join("") || `<p class="muted small">No device keys yet.</p>`;
+  $("#dev-hooks").innerHTML = hooks.map((h) => `<div class="row between dev-row"><div><code>${esc(h.url)}</code>
+      <div class="muted small">${h.last_at ? `last delivery ${fmt(h.last_at)}: ${esc(h.last_status)}` : "no deliveries yet"}</div></div>
+      <button class="btn" data-del-hook="${h.id}">Remove</button></div>`).join("") || `<p class="muted small">No webhooks yet.</p>`;
+  $$("[data-revoke-dev]").forEach((b) => b.onclick = async () => { await api(`/api/devices/${b.dataset.revokeDev}`, { method: "DELETE" }); loaders.dev(); });
+  $$("[data-del-hook]").forEach((b) => b.onclick = async () => { await api(`/api/webhooks/${b.dataset.delHook}`, { method: "DELETE" }); loaders.dev(); });
+};
+$("#dev-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  busy(e.submitter, async () => {
+    const { token } = await post("/api/devices", { item_id: +$("#dev-item").value, label: $("#dev-label").value || null });
+    $("#dev-new").innerHTML = `<div class="banner ok">New key (shown once): <code>${esc(token)}</code></div>
+      <pre class="log">curl -X POST ${esc(location.origin)}/v1/readings \\
+  -H "Authorization: Bearer ${esc(token)}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"temp_c": 4.6}'</pre>`;
+    loaders.dev();
+  });
+});
+$("#hook-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  busy(e.submitter, async () => {
+    const h = await post("/api/webhooks", { url: $("#hook-url").value });
+    $("#hook-new").innerHTML = `<div class="banner ok">Signing secret (shown once): <code>${esc(h.secret)}</code><br><span class="small">Each alert is POSTed as JSON with <code>X-Lifelog-Signature: sha256=HMAC(secret, body)</code>.</span></div>`;
+    $("#hook-url").value = ""; loaders.dev();
+  });
+});
+
+// ------------------------------------------------------------------ Bluetooth thermometer (Web Bluetooth, no app)
+function ieee11073(dv, offset) {          // Health Thermometer: 32-bit IEEE-11073 FLOAT
+  const raw = dv.getUint32(offset, true);
+  let mant = raw & 0x00ffffff; const exp = (raw >> 24) << 24 >> 24;
+  if (mant >= 0x800000) mant -= 0x1000000;
+  return mant * Math.pow(10, exp);
+}
+async function connectBle(itemId) {
+  try {
+    const dev = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true, optionalServices: ["health_thermometer", "environmental_sensing"] });
+    const server = await dev.gatt.connect();
+    let ch, parse;
+    try {
+      ch = await (await server.getPrimaryService("health_thermometer")).getCharacteristic("temperature_measurement");
+      parse = (dv) => { const c = ieee11073(dv, 1); return dv.getUint8(0) & 1 ? (c - 32) * 5 / 9 : c; };
+    } catch {
+      ch = await (await server.getPrimaryService("environmental_sensing")).getCharacteristic("temperature");
+      parse = (dv) => dv.getInt16(0, true) / 100;   // sint16, 0.01 °C
+    }
+    const btn = $("#ble-btn"); if (btn) btn.textContent = `Sensor: ${dev.name || "connected"}`;
+    ch.addEventListener("characteristicvaluechanged", async (ev) => {
+      const t = parse(ev.target.value);
+      if (!Number.isFinite(t)) return;
+      try { await post("/api/ingest", { item_id: itemId, source: "bluetooth", readings: [{ ts: new Date().toISOString(), temp_c: +t.toFixed(2) }] }); }
+      catch (e) { console.error(e); }
+    });
+    await ch.startNotifications();
+    toast(`Streaming from ${dev.name || "your sensor"}`);
+    dev.addEventListener("gattserverdisconnected", () => { toast("Sensor disconnected", "warn"); const b = $("#ble-btn"); if (b) b.textContent = "Connect sensor"; });
+  } catch (e) {
+    if (e.name !== "NotFoundError") toast("Bluetooth: " + e.message, "warn");   // NotFoundError = picker cancelled
+  }
 }
 
 // ------------------------------------------------------------------ alerts
@@ -674,6 +768,7 @@ $("#tiger-refresh").addEventListener("click", (e) => busy(e.currentTarget, () =>
 // ------------------------------------------------------------------ demo controls
 const log = (o) => { $("#demo-log").textContent = `${new Date().toLocaleTimeString()}  ${JSON.stringify(o, null, 1)}\n` + $("#demo-log").textContent; };
 $$("[data-demo]").forEach((b) => b.addEventListener("click", () => busy(b, async () => {
+  if (b.dataset.demo === "reset" && !confirm("Reset erases every medicine, reading and alert in this database and loads fresh demo data. Continue?")) return;
   const r = await post(`/api/demo/${b.dataset.demo}`); log({ [b.dataset.demo]: r }); toast("Done"); await loadCompare(); health();
   if (b.dataset.demo === "reset") { currentItem = null; await loadItems(); }
 })));

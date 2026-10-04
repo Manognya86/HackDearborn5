@@ -20,6 +20,8 @@ class GeminiUnavailable(RuntimeError):
 
 def client() -> genai.Client:
     global _client
+    if config.GEMINI_DISABLED:
+        raise GeminiUnavailable("Gemini is switched off on this server (GEMINI_DISABLED=1).")
     if not config.GEMINI_API_KEY:
         raise GeminiUnavailable("GEMINI_API_KEY is not set in .env")
     if _client is None:

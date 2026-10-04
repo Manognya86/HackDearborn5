@@ -119,3 +119,26 @@ def test_calendar_limits_override_a_healthy_budget():
     over = engine.dates_info(now - timedelta(days=30), None, 28, now)
     st = engine.status_of({"remaining": 1.0, "stale_minutes": 0}, 1.0, "Labeled storage", over)
     assert st["code"] == "DO_NOT_USE" and "28 days" in st["why"]
+
+
+def test_offline_report_and_label_parsers():
+    from lifelog import offline
+    ev = offline.parse_report("I left my EpiPen in the car for about two hours")["events"][0]
+    assert ev["setting"] == "parked car" and ev["duration_minutes"] == 120
+    m = offline.parse_label_text("Trulicity", "Store TRULICITY in the refrigerator at 36°F to 46°F (2°C to 8°C). "
+                                 "If needed, each single-dose pen can be kept at room temperature, not to exceed 86°F (30°C) "
+                                 "for a total of 14 days. Do not freeze TRULICITY.")
+    assert (m["target_min_c"], m["target_max_c"]) == (2.0, 8.0) and m["freeze_discard"]
+    assert m["bands"][0]["max_c"] == 30.0 and m["bands"][0]["budget_hours"] == 336.0
+    m2 = offline.parse_label_text("Tresiba", "Store unused TRESIBA in a refrigerator (36°F to 46°F [2°C to 8°C]). "
+                                  "Room Temperature (up to 86°F [30°C]) 56 days (8 weeks). Do not freeze.")
+    assert m2["bands"][0]["max_c"] == 30.0 and m2["bands"][0]["budget_hours"] == 56 * 24
+
+
+def test_reset_is_refused_on_a_remote_database(monkeypatch):
+    from lifelog import config
+    monkeypatch.delenv("ALLOW_DEMO_RESET", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@abc.tsdb.cloud.timescale.com:33301/tsdb")
+    assert not config.reset_allowed()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@localhost:5432/x")
+    assert config.reset_allowed()

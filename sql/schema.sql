@@ -63,6 +63,36 @@ CREATE TABLE IF NOT EXISTS shares (
     revoked    BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- Verifiable exposure receipts: a fingerprint (SHA-256) of an item's exposure record up to a moment in time.
+CREATE TABLE IF NOT EXISTS receipts (
+    code       TEXT PRIMARY KEY,
+    item_id    INT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    as_of      TIMESTAMPTZ NOT NULL,
+    payload    JSONB NOT NULL,
+    digest     TEXT NOT NULL
+);
+
+-- Developer platform: per-device ingest keys and signed alert webhooks
+CREATE TABLE IF NOT EXISTS devices (
+    token      TEXT PRIMARY KEY,
+    item_id    INT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    label      TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen  TIMESTAMPTZ,
+    readings   BIGINT NOT NULL DEFAULT 0,
+    revoked    BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE TABLE IF NOT EXISTS webhooks (
+    id          SERIAL PRIMARY KEY,
+    url         TEXT NOT NULL,
+    secret      TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    last_status TEXT,
+    last_at     TIMESTAMPTZ
+);
+
 -- ---------------------------------------------------------------- telemetry
 CREATE TABLE IF NOT EXISTS readings (
     ts          TIMESTAMPTZ NOT NULL,

@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="/static/style.css?v=8">
+<link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -55,6 +55,7 @@
       <button data-view="porch"><svg><use href="#i-sun"/></svg><span>Porch heat</span></button>
       <div class="nav-sep">Behind the scenes</div>
       <button data-view="tiger"><svg><use href="#i-db"/></svg><span>Under the hood</span></button>
+      <button data-view="dev"><svg><use href="#i-file"/></svg><span>For developers</span></button>
       <button data-view="demo"><svg><use href="#i-sliders"/></svg><span>Demo controls</span></button>
     </nav>
     <div id="health" class="health"></div>
@@ -195,6 +196,27 @@
         </div>
       </section>
 
+      <!-- ======================================================= developers -->
+      <section id="view-dev" class="view">
+        <div class="card narrow">
+          <h2>Build on LIFELOG</h2>
+          <p class="muted">Any thermometer, smart fridge, cooler bag or pharmacy system can send readings and receive alerts. The life-budget math, late-data repair and alerts run in Tiger Data; you just send temperatures.</p>
+          <div class="row"><a class="btn" href="/docs" target="_blank">API reference (OpenAPI)</a>
+            <a class="btn" href="/api/schema/stability-model" target="_blank">Stability-model schema</a>
+            <a class="btn" href="/api/products" target="_blank">Medicine rules (JSON)</a></div>
+          <h3>Device keys</h3>
+          <p class="small muted">One key per sensor. A key can only add readings to its own medicine.</p>
+          <form id="dev-form" class="dates-form"><label class="small">Medicine<select id="dev-item"></select></label>
+            <label class="small">Name<input type="text" id="dev-label" placeholder="e.g. fridge sensor"></label>
+            <button class="btn primary" type="submit">Create key</button></form>
+          <div id="dev-new"></div><div id="dev-devices"></div>
+          <h3>Alert webhooks</h3>
+          <p class="small muted">Every alert (opened, changed or resolved) is POSTed to your URL within seconds, signed with HMAC-SHA256.</p>
+          <form id="hook-form" class="composer"><input type="text" id="hook-url" placeholder="https://example.com/lifelog-alerts" aria-label="Webhook URL"><button class="btn primary" type="submit">Add webhook</button></form>
+          <div id="hook-new"></div><div id="dev-hooks"></div>
+        </div>
+      </section>
+
       <!-- ======================================================= demo -->
       <section id="view-demo" class="view">
         <div class="card narrow">
@@ -210,7 +232,7 @@
             <button class="btn primary" id="sim-btn">Start live sensors</button>
           </div>
           <p id="sim-status" class="muted small"></p>
-          <h3>Late-data check: insulin vial</h3>
+          <h3>Late-data check: Lantus pen</h3>
           <p class="muted small">The dashboard reads a continuous aggregate. Readings that arrive late stay hidden until their window is refreshed.</p>
           <div id="compare"></div>
           <pre id="demo-log" class="log"></pre>
@@ -236,6 +258,7 @@
       <button data-view="trip"><svg><use href="#i-plane"/></svg>Trip check</button>
       <button data-view="porch"><svg><use href="#i-sun"/></svg>Porch heat</button>
       <button data-view="tiger"><svg><use href="#i-db"/></svg>Under the hood</button>
+      <button data-view="dev"><svg><use href="#i-file"/></svg>For developers</button>
       <button data-view="demo"><svg><use href="#i-sliders"/></svg>Demo controls</button>
     </div>
   </div>
@@ -276,6 +299,6 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="/static/app.js?v=11"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>

@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import assistant, config, db, engine, gem, realtime, seed, services, sim
+from . import assistant, config, db, engine, gem, offline, realtime, seed, services, sim
 from .models import StabilityModel
 
 app = FastAPI(title="LIFELOG Home")
@@ -53,7 +53,7 @@ def _llm_state(d: dict) -> dict:
 @app.get("/api/health")
 def health():
     """Liveness for the demo and the host: database, TimescaleDB, background jobs, LISTEN thread. No secrets."""
-    out = {"gemini": bool(config.GEMINI_API_KEY), "model": config.GEMINI_MODEL, "database": False, **realtime.status()}
+    out = {"gemini": bool(config.GEMINI_API_KEY) and not config.GEMINI_DISABLED, "model": config.GEMINI_MODEL, "database": False, **realtime.status()}
     try:
         out["extensions"] = {r["extname"]: r["extversion"] for r in
                              db.query("SELECT extname, extversion FROM pg_extension")}
@@ -222,9 +222,17 @@ def repair(item_id: int):
     return res
 
 
+def _fallback_note(e: Exception) -> str:
+    return f"Gemini wasn't used: {str(e).split('. ')[0].rstrip('.')}."
+
+
 @app.post("/api/items/{item_id}/advice")
 def advice(item_id: int, lang: str = "en"):
-    return gem.advise(_llm_state(_item_or_404(item_id)), lang)
+    d = _item_or_404(item_id)
+    try:
+        return {**gem.advise(_llm_state(d), lang), "ai": True}
+    except gem.GeminiUnavailable as e:
+        return {**offline.advise(d), "notice": _fallback_note(e)}
 
 
 @app.post("/api/items/{item_id}/visual")
@@ -246,7 +254,12 @@ def letter(item_id: int, lang: str = "en"):
            "label_rules": {k: m.get(k) for k in ("target_quote", "bands", "freeze_quote", "above_limit_quote",
                                                   "above_limit_is_assumption")},
            "outage": outage, "data_gaps": d["gaps"], "generated_at": services.now()}
-    return {"letter": gem.refill_letter(ctx, lang)}
+    rc = services.create_receipt(d)          # pharmacists can verify the numbers in the letter
+    ctx.update(receipt_code=rc["code"], receipt_url=f"/r/{rc['code']}")
+    try:
+        return {"letter": gem.refill_letter(ctx, lang), "ai": True, "receipt": rc}
+    except gem.GeminiUnavailable as e:
+        return {"letter": offline.refill_letter(ctx), "ai": False, "notice": _fallback_note(e), "receipt": rc}
 
 
 class TripIn(BaseModel):
@@ -256,9 +269,19 @@ class TripIn(BaseModel):
 @app.post("/api/items/{item_id}/trip")
 def trip(item_id: int, body: TripIn, lang: str = "en"):
     _item_or_404(item_id)
-    plan = gem.parse_trip(body.itinerary, services.now())
+    try:
+        plan = gem.parse_trip(body.itinerary, services.now())
+    except gem.GeminiUnavailable as e:
+        raise HTTPException(503, "Trip check needs Gemini to read free-text plans, and Gemini is unavailable right now. "
+                                 "Everything else keeps working. " + str(e).split(". ")[0] + ".")
     sim = services.simulate_trip(item_id, plan["legs"])
-    sim["advice"] = gem.trip_advice(sim, lang)
+    try:
+        sim["advice"] = gem.trip_advice(sim, lang)
+    except gem.GeminiUnavailable:
+        worst = max(sim["legs"], key=lambda l: l["budget_used"], default=None)
+        sim["advice"] = (f"- The riskiest part is **{worst['summary']}** (up to {worst['peak_temp_c']}°C).\n"
+                         "- Carry it in an insulated case with a cold pack, never in a parked car or checked bag."
+                         if worst else "- No risky legs found.")
     return sim
 
 
@@ -279,10 +302,19 @@ def lookup(body: LookupIn):
     has no usable storage section, Gemini searches the web with Google Search + URL Context grounding."""
     hit = services.openfda_lookup(body.name)
     if hit:
-        model = gem.extract_label_text(f"{hit['brand']} ({hit['generic']})", hit["text"])
-        return {"model": model, "method": "openfda", "source_label": hit["source_label"], "source_url": hit["source_url"],
-                "sources": [{"title": hit["source_label"], "url": hit["source_url"]}], "label_text": hit["text"][:1500]}
-    found = gem.search_label(body.name)
+        name = f"{hit['brand']} ({hit['generic']})"
+        try:
+            model, method, notice = gem.extract_label_text(name, hit["text"]), "openfda", None
+        except gem.GeminiUnavailable as e:   # official text still found: read it with rules, flag it for checking
+            model, method, notice = offline.parse_label_text(name, hit["text"]), "openfda_rules", _fallback_note(e)
+        return {"model": model, "method": method, "notice": notice, "source_label": hit["source_label"],
+                "source_url": hit["source_url"], "sources": [{"title": hit["source_label"], "url": hit["source_url"]}],
+                "label_text": hit["text"][:1500]}
+    try:
+        found = gem.search_label(body.name)
+    except gem.GeminiUnavailable as e:
+        raise HTTPException(503, f"'{body.name}' isn't in openFDA, and searching the web needs Gemini, which is unavailable "
+                                 f"right now. Try the brand name, or add it from a label photo later. {str(e).split('. ')[0]}.")
     if "NOT FOUND" in found["text"][:200] or not found["text"].strip():
         raise HTTPException(404, f"No official storage information found for '{body.name}'. Try uploading a photo of the label.")
     model = gem.extract_label_text(body.name, found["text"])
@@ -333,9 +365,15 @@ def ingest(body: IngestIn):
 async def voice(item_id: int = Form(...), text: str | None = Form(None), audio: UploadFile | None = File(None)):
     d = _item_or_404(item_id)
     mine = [{"id": i["id"], "nickname": i["nickname"]} for i in items()]
-    report = gem.parse_voice(services.now(), mine,
-                             audio=await audio.read() if audio else None,
-                             mime_type=(audio.content_type if audio else "audio/wav") or "audio/wav", text=text)
+    try:
+        report = gem.parse_voice(services.now(), mine,
+                                 audio=await audio.read() if audio else None,
+                                 mime_type=(audio.content_type if audio else "audio/wav") or "audio/wav", text=text)
+    except gem.GeminiUnavailable as e:
+        if not text:
+            raise HTTPException(503, "Voice recordings need Gemini, which is unavailable right now. Type what happened instead: "
+                                     "that works without AI.")
+        report = {**offline.parse_report(text), "notice": _fallback_note(e)}
     pts = []
     t_now = services.now()
     for ev in report["events"]:
@@ -361,9 +399,14 @@ def rescue():
 @app.post("/api/rescue/plan")
 def rescue_plan(lang: str = "en"):
     r = services.rescue()
+    if not r["outages"]["features"]:
+        return {"plan": "There's no power outage right now, so there is nothing to dispatch.", "ai": False}
     at_risk = [p for p in r["people"] if p["at_risk"]] or r["people"][:5]
-    outage = r["outages"]["features"][0]["properties"] if r["outages"]["features"] else {}
-    return {"plan": gem.rescue_plan(at_risk[:10], outage, lang)}
+    outage = r["outages"]["features"][0]["properties"]
+    try:
+        return {"plan": gem.rescue_plan(at_risk[:10], outage, lang), "ai": True}
+    except gem.GeminiUnavailable as e:
+        return {"plan": offline.rescue_plan(at_risk[:10], outage), "ai": False, "notice": _fallback_note(e)}
 
 
 # ------------------------------------------------------------------ porch heat index
@@ -374,7 +417,11 @@ def porch():
 
 @app.post("/api/porch/brief")
 def porch_brief():
-    return {"brief": gem.porch_brief(services.porch_stats())}
+    stats = services.porch_stats()
+    try:
+        return {"brief": gem.porch_brief(stats), "ai": True}
+    except gem.GeminiUnavailable as e:
+        return {"brief": offline.porch_brief(stats), "ai": False, "notice": _fallback_note(e)}
 
 
 # ------------------------------------------------------------------ alerts (written by the check_alerts job)
@@ -422,10 +469,126 @@ def ask(body: AskIn, lang: str = "en"):
     return assistant.ask(body.question, body.history, lang)
 
 
+# ------------------------------------------------------------------ exposure receipts (verifiable)
+@app.post("/api/items/{item_id}/receipt")
+def receipt(item_id: int):
+    return services.create_receipt(_item_or_404(item_id))
+
+
+@app.get("/api/receipts/{code}")
+def get_receipt(code: str):
+    r = services.verify_receipt(code)
+    if not r:
+        raise HTTPException(404, "No exposure receipt with this code.")
+    return r
+
+
+@app.get("/r/{code}")
+def receipt_page(code: str):
+    return FileResponse(config.ROOT / "static" / "receipt.html")
+
+
+# ------------------------------------------------------------------ developer platform
+class DeviceIn(BaseModel):
+    item_id: int
+    label: str | None = None
+
+
+@app.post("/api/devices")
+def add_device(body: DeviceIn):
+    _item_or_404(body.item_id)
+    return {"token": services.create_device(body.item_id, body.label)}
+
+
+@app.get("/api/devices")
+def list_devices():
+    return services.devices()
+
+
+@app.delete("/api/devices/{token}")
+def remove_device(token: str):
+    db.execute("UPDATE devices SET revoked = TRUE WHERE token = %s", (token,))
+    return {"ok": True}
+
+
+class DeviceReading(BaseModel):
+    temp_c: float
+    ts: datetime | None = None
+    humidity: float | None = None
+
+
+class DeviceBatch(BaseModel):
+    readings: list[DeviceReading] | None = None
+    temp_c: float | None = None
+
+
+@app.post("/v1/readings")
+def device_readings(body: DeviceBatch, request: Request):
+    """Public ingest for sensors and partner apps: Authorization: Bearer <device token>. Accepts one reading
+    ({"temp_c": 4.2}) or a batch ({"readings": [{"ts": ..., "temp_c": ...}]}); late batches are repaired."""
+    auth = request.headers.get("authorization", "")
+    dev = services.device_for(auth.removeprefix("Bearer ").strip()) if auth.lower().startswith("bearer ") else None
+    if not dev:
+        raise HTTPException(401, "Missing or unknown device token (Authorization: Bearer <token>).")
+    rows = body.readings or ([DeviceReading(temp_c=body.temp_c)] if body.temp_c is not None else [])
+    if not rows:
+        raise HTTPException(422, "Send temp_c or readings.")
+    now_ = services.now()
+    res = services.ingest(dev["item_id"], [{"ts": r.ts or now_, "temp_c": r.temp_c, "humidity": r.humidity} for r in rows],
+                          source="device", auto_refresh=True)
+    db.execute("UPDATE devices SET last_seen = now(), readings = readings + %s WHERE token = %s",
+               (res.get("inserted", 0), dev["token"]))
+    return res
+
+
+class WebhookIn(BaseModel):
+    url: str
+
+
+@app.post("/api/webhooks")
+def add_webhook(body: WebhookIn):
+    if not body.url.startswith(("https://", "http://")):
+        raise HTTPException(422, "The URL must start with https:// or http://")
+    return services.create_webhook(body.url)
+
+
+@app.get("/api/webhooks")
+def list_webhooks():
+    return services.webhooks()
+
+
+@app.delete("/api/webhooks/{hook_id}")
+def remove_webhook(hook_id: int):
+    db.execute("UPDATE webhooks SET active = FALSE WHERE id = %s", (hook_id,))
+    return {"ok": True}
+
+
+@app.get("/api/schema/stability-model")
+def stability_schema():
+    """The open format LIFELOG uses for a medicine's storage rules (JSON Schema)."""
+    return StabilityModel.model_json_schema()
+
+
+@app.get("/api/products/{product_id}/model")
+def product_model(product_id: int):
+    p = db.one("SELECT id, name, model, source, source_label, source_url FROM products WHERE id = %s", (product_id,))
+    if not p:
+        raise HTTPException(404, "unknown product")
+    return p
+
+
+@app.get("/api/products")
+def list_products():
+    return db.query("SELECT id, name, source, source_label, source_url FROM products ORDER BY name")
+
+
 # ------------------------------------------------------------------ demo controls
 @app.post("/api/demo/{scenario}")
 def demo(scenario: str, auto_refresh: bool = True):
     if scenario == "reset":
+        if not config.reset_allowed():
+            raise HTTPException(403, f"Reset is turned off: this server uses a shared database ({config.db_host()}) and "
+                                     "reset erases everything in it. Set ALLOW_DEMO_RESET=1 in .env if you really mean it.")
         sim.stop()
         seed.apply_schema()
         return seed.run(with_weather=True)

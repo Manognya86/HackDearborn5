@@ -7,6 +7,20 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# GEMINI_DISABLED=1 turns every Gemini call off (no request leaves the machine): for testing without spending quota
+GEMINI_DISABLED = os.getenv("GEMINI_DISABLED", "").strip().lower() in ("1", "true", "yes")
+
+
+def db_host() -> str:
+    from urllib.parse import urlparse
+    return urlparse(os.getenv("DATABASE_URL", "")).hostname or "unknown"
+
+
+def reset_allowed() -> bool:
+    """'Reset & seed data' erases the whole database: only on a local one, unless ALLOW_DEMO_RESET=1."""
+    if os.getenv("ALLOW_DEMO_RESET", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return db_host() in ("localhost", "127.0.0.1", "::1")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 # Tried in order when the main model is overloaded (503), out of quota (429) or unavailable (404)
 GEMINI_FALLBACK_MODELS = [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.7-flash,gemini-3.5-flash,gemini-3.1-flash-lite").split(",")

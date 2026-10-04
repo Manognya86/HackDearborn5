@@ -11,6 +11,7 @@ from lifelog import config, gem
 @pytest.fixture(autouse=True)
 def fake_key(monkeypatch):
     monkeypatch.setattr(config, "GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(config, "GEMINI_DISABLED", False)   # these tests mock Gemini; the real API is never called
     monkeypatch.setattr(config, "GEMINI_FALLBACK_MODELS", ["fallback-a", "fallback-b"])
     monkeypatch.setattr(gem, "_client", None)
     monkeypatch.setattr(gem.time, "sleep", lambda s: None)

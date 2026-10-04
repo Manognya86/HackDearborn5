@@ -60,3 +60,20 @@ def test_expired_and_in_use_alerts():
     kinds = {r["kind"] for r in db.query("SELECT kind FROM alerts WHERE resolved_at IS NULL")}
     expired = db.one("SELECT count(*) AS n FROM items WHERE expires_on < current_date")["n"]
     assert ("expired" in kinds) == (expired > 0)
+
+
+def test_receipt_detects_changed_readings():
+    from datetime import timedelta
+    from lifelog import db, services
+    d = services.item_detail(1)
+    rc = services.create_receipt(d)
+    assert services.verify_receipt(rc["code"])["matches"]
+    ts = rc["as_of"] - timedelta(hours=30, minutes=1, seconds=7)
+    db.execute("INSERT INTO readings (ts, item_id, temp_c, source) VALUES (%s, 1, 26.0, 'test')", (ts,))
+    db.refresh_readings(ts, ts)
+    try:
+        v = services.verify_receipt(rc["code"])
+        assert not v["matches"] and "changed" in v["reason"]
+    finally:
+        db.execute("DELETE FROM readings WHERE source = 'test'")
+        db.refresh_readings(ts, ts)

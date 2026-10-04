@@ -129,6 +129,30 @@ warming ramp through `/api/ingest` that must raise the early warning.
 
 This is a decision-support prototype, not medical advice.
 
+## What makes LIFELOG different
+
+**For patients and caregivers**
+- **Works without AI.** Every Gemini feature has a rule-based fallback built from your data and the label's own words
+  (safe-to-use verdict, refill letter, outage dispatch, pharmacy brief, add-by-name from the FDA label, typed reports).
+  Answers say when no AI was used. Only photo checks, voice recordings and free-text trip plans need Gemini.
+- **Verifiable exposure receipts.** One tap freezes a medicine's exposure record and stores its SHA-256 fingerprint.
+  A pharmacist or insurer scans the QR code (`/r/<code>`) and sees the record, plus whether the stored readings still
+  match. Late or edited data for that period is detected. Refill letters include the receipt.
+- **Real sensors, no app.** "Connect sensor" pairs a Bluetooth thermometer straight from the browser (Web Bluetooth;
+  Health Thermometer or Environmental Sensing service) and streams readings into Tiger Data.
+
+**For developers**
+- **Device keys + `POST /v1/readings`** (`Authorization: Bearer llg_…`): any thermometer, smart fridge or cooler bag
+  sends temperatures; LIFELOG does the life-budget math, late-data repair and alerts in Tiger Data.
+- **Signed alert webhooks**: every alert is POSTed within seconds with `X-Lifelog-Signature: sha256=HMAC(secret, body)`.
+- **An open format for medicine storage rules**: `GET /api/schema/stability-model` (JSON Schema), `GET /api/products`,
+  and the full API at `/docs`.
+
+## Safety switches
+- `GEMINI_DISABLED=1`: no Gemini request ever leaves the server (for testing without spending quota).
+- **Reset & seed data** only works on a local database; on a shared/cloud database it is refused unless
+  `ALLOW_DEMO_RESET=1`. The button also asks for confirmation.
+
 ## Medicines and where their rules come from
 Every seeded product quotes Section 16 ("How Supplied / Storage and Handling") of its FDA prescribing information,
 retrieved through [openFDA](https://open.fda.gov/apis/drug/label/). Each links to its DailyMed page in the app.
